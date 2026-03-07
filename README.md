@@ -1,8 +1,14 @@
-# Work Share
+# Work Share eDIT FROM USER 2
 
 A collaborative VS Code extension with a remote server for tracking and sharing file activity across team members.
 
-## Project Structure
+## Project Name
+
+#
+
+#This is a modified line
+
+#
 
 ```
 work-share/
