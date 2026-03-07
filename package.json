@@ -1,0 +1,48 @@
+{
+  "name": "work-share-monorepo",
+  "version": "1.0.0",
+  "description": "Work Share - VS Code extension with API server for team collaboration",
+  "private": true,
+  "scripts": {
+    "install:all": "npm run install:plugin && npm run install:server",
+    "install:plugin": "cd plugin && npm install",
+    "install:server": "cd server && npm install",
+    "build": "npm run build:plugin && npm run build:server",
+    "build:plugin": "cd plugin && npm run compile",
+    "build:server": "cd server && npm run build",
+    "clean": "npm run clean:plugin && npm run clean:server",
+    "clean:plugin": "cd plugin && rm -rf out node_modules",
+    "clean:server": "cd server && rm -rf dist node_modules",
+    "dev:plugin": "cd plugin && npm run watch",
+    "dev:server": "cd server && npm run dev",
+    "test": "npm run test:plugin",
+    "test:plugin": "cd plugin && npm test",
+    "lint": "npm run lint:plugin && npm run lint:server",
+    "lint:plugin": "cd plugin && npm run lint",
+    "lint:server": "cd server && npm run lint",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f work-share-server",
+    "docker:restart": "npm run docker:down && npm run docker:up",
+    "start": "docker-compose up -d",
+    "stop": "docker-compose down",
+    "try": "npm run try:setup && npm run try:launch",
+    "try:setup": "npm run build:plugin && npm start && echo 'Waiting for server to start...' && sleep 3",
+    "try:launch": "echo '\n✅ Server is running at http://localhost:3000\n✅ Plugin is built and ready\n\n📝 Next step: Press F5 in VS Code to launch Extension Development Host\n' && code .",
+    "try:stop": "npm stop"
+  },
+  "keywords": [
+    "vscode",
+    "extension",
+    "collaboration",
+    "activity-tracking",
+    "team-tools"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
