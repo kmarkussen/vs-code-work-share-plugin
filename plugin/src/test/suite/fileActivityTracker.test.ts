@@ -11,7 +11,6 @@ suite("FileActivityTracker Test Suite", () => {
     let mockContext: vscode.ExtensionContext;
 
     setup(() => {
-        // Create a mock extension context
         mockContext = {
             subscriptions: [],
             workspaceState: {
@@ -45,9 +44,12 @@ suite("FileActivityTracker Test Suite", () => {
             languageModelAccessInformation: {} as any,
         } as vscode.ExtensionContext;
 
-        // Use real client construction so tracker dependencies match production wiring.
         const apiClient = new ApiClient();
         tracker = new FileActivityTracker(mockContext, apiClient);
+    });
+
+    teardown(() => {
+        tracker.stop();
     });
 
     test("FileActivityTracker should initialize", () => {
@@ -64,5 +66,24 @@ suite("FileActivityTracker Test Suite", () => {
             tracker.start();
             tracker.stop();
         });
+    });
+
+    test("FileActivityTracker should be instantiated without throwing", () => {
+        const apiClient = new ApiClient();
+        const newTracker = new FileActivityTracker(mockContext, apiClient);
+        assert.ok(newTracker);
+        newTracker.stop();
+    });
+
+    test("FileActivityTracker configuration update should not throw", () => {
+        assert.doesNotThrow(() => {
+            tracker.updateConfiguration();
+        });
+    });
+
+    test("FileActivityTracker should handle getCurrentRepositoryRemoteUrl without active repo", async () => {
+        const remoteUrl = await tracker.getCurrentRepositoryRemoteUrl();
+        // In test environment without git, this may return undefined
+        assert.ok(remoteUrl === undefined || typeof remoteUrl === "string");
     });
 });

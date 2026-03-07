@@ -25,6 +25,8 @@ interface GitRepository {
     state?: {
         remotes?: GitRemote[];
     };
+    /** Checks if a file path is ignored by git. */
+    isIgnored(uri: vscode.Uri): Promise<boolean>;
 }
 
 interface GitApi {
@@ -152,6 +154,24 @@ export class FileActivityTracker {
     }
 
     /**
+     * Checks if a file is ignored by git to avoid tracking build artifacts, dependencies, etc.
+     */
+    private async isFileIgnoredByGit(filePath: string): Promise<boolean> {
+        await this.initializeGitContext();
+        const repository = this.resolveRepositoryForFile(filePath);
+        if (!repository) {
+            return false;
+        }
+
+        try {
+            return await repository.isIgnored(vscode.Uri.file(filePath));
+        } catch (error) {
+            console.error("Failed to check if file is ignored:", error);
+            return false;
+        }
+    }
+
+    /**
      * Resolves the active repository remote URL used for filtering visible activity.
      */
     public async getCurrentRepositoryRemoteUrl(): Promise<string | undefined> {
@@ -257,6 +277,17 @@ export class FileActivityTracker {
     private async trackActivity(filePath: string, action: "open" | "edit" | "close") {
         // Ignore non-workspace files
         if (!vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))) {
+            return;
+        }
+
+        // Ignore files inside .git directory and git internal files
+        const normalizedPath = filePath.replace(/\\/g, "/");
+        if (normalizedPath.includes("/.git/") || normalizedPath.endsWith("/.git")) {
+            return;
+        }
+
+        // Ignore files that are in .gitignore
+        if (await this.isFileIgnoredByGit(filePath)) {
             return;
         }
 
