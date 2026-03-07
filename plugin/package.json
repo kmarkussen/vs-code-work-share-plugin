@@ -23,8 +23,32 @@
       {
         "command": "work-share.configure",
         "title": "Work Share: Configure Settings"
+      },
+      {
+        "command": "work-share.checkActiveFileConflicts",
+        "title": "Work Share: Check Active File Conflicts",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "work-share.checkProjectConflicts",
+        "title": "Work Share: Check Project Conflicts",
+        "icon": "$(repo)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "work-share.checkActiveFileConflicts",
+          "when": "view == workShareActivity",
+          "group": "navigation@1"
+        },
+        {
+          "command": "work-share.checkProjectConflicts",
+          "when": "view == workShareActivity",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "configuration": {
       "title": "Work Share",
       "properties": {
@@ -47,6 +71,11 @@
           "type": "number",
           "default": 5000,
           "description": "Interval (in milliseconds) for checking file activity"
+        },
+        "workShare.autoCheckConflictsOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically check for incoming patch conflicts whenever a file is saved"
         }
       }
     },

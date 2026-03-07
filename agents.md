@@ -17,6 +17,16 @@ work-share/
 │   ├── package.json       # Extension manifest
 │   └── tsconfig.json      # TypeScript config
 ├── server/                # Node.js API Server
+│   ├── client/            # React Dashboard
+│   │   ├── src/          # React components and logic
+│   │   │   ├── components/ # RepositoriesPanel, UsersPanel, PatchesPanel
+│   │   │   ├── App.tsx   # Main app with MUI theme and tabs
+│   │   │   ├── api.ts    # HTTP client for server API
+│   │   │   └── types.ts  # TypeScript interfaces
+│   │   ├── index.html    # Dashboard entry point
+│   │   ├── vite.config.ts # Build configuration
+│   │   └── package.json  # Dashboard dependencies
+│   ├── public/            # Built dashboard files (generated)
 │   ├── src/               # Server source files
 │   │   ├── app.ts        # Main application entry
 │   │   ├── controllers/  # Request handlers
@@ -41,14 +51,26 @@ work-share/
 - Identifies users via git config or settings
 - Sends activity data to the server API
 - Displays activity in sidebar tree view
+- Shows conflict detection warnings
 
 **Server (Node.js API)**
 
-- Receives and processes activity data
+- Receives and processes activity data and patches
 - Built with Express and routing-controllers
 - Validates requests using class-validator
 - Provides health check endpoint
 - Runs in Docker container
+- Serves React dashboard at root URL
+
+**Dashboard (React Web UI)**
+
+- Material-UI themed single-page application
+- Three-tab interface: Repositories, Users, Patches
+- Real-time monitoring with auto-refresh (5-second interval)
+- Repository view: Activity counts, patch counts, active users
+- User view: Recent activity, last seen timestamps, repositories
+- Patch view: Expandable cards with syntax-highlighted diffs
+- Built with Vite and served as static files from server
 
 ## Root-Level Scripts
 
@@ -279,6 +301,21 @@ Then press **F5** in VS Code to launch the Extension Development Host.
     - `userName`: Filter by user name
 - Response: `{ count: number, activities: StoredActivity[] }`
 
+**POST /patches**
+
+- Receives repository-relative unified diff patches shared on save
+- Request body: `PatchDto`
+- Response: `{ success: boolean, message: string, timestamp: string }`
+
+**GET /patches**
+
+- Returns shared patches from server memory
+- Optional query params:
+    - `repositoryRemoteUrl`: Filter by repository remote URL
+    - `repositoryFilePath`: Filter by repository-relative file path
+    - `userName`: Filter by user name
+- Response: `{ count: number, patches: StoredPatch[] }`
+
 **GET /health**
 
 - Health check endpoint
@@ -299,6 +336,89 @@ Then press **F5** in VS Code to launch the Extension Development Host.
   ]
 }
 ```
+
+## Dashboard
+
+The server includes a web-based React dashboard for real-time monitoring of file activity and code patches across the team.
+
+### Accessing the Dashboard
+
+When the server is running, open `http://localhost:3000` in a web browser to access the dashboard.
+
+### Dashboard Architecture
+
+The dashboard is built as a single-page application (SPA) using:
+
+- **React 18.2**: UI framework
+- **Material-UI (MUI) 5.14**: Component library with dark theme
+- **Vite 5.0**: Build tool and dev server
+- **Axios 1.6**: HTTP client for API communication
+
+The dashboard source code is located in `server/client/` and builds to `server/public/`, which is served as static files by the Express server.
+
+### Dashboard Features
+
+**Three-Tab Interface**
+
+1. **Repositories Tab**
+   - Displays all tracked repositories from git remote URLs
+   - Shows activity count and patch count per repository
+   - Lists active users for each repository (top 5 displayed)
+   - Responsive card grid layout with folder icons
+
+2. **Users Tab**
+   - Shows all team members who have submitted activity or patches
+   - Displays last activity timestamp with relative time formatting ("5m ago", "2h ago")
+   - Lists repositories each user is working on
+   - Avatar icons for visual identification
+
+3. **Patches Tab**
+   - Shows all shared code patches in expandable cards
+   - Syntax-highlighted diff viewer in monospace font
+   - Metadata chips display: username, repository, timestamp, base commit
+   - Collapsible content to save screen space
+
+**Auto-Refresh**
+
+The dashboard automatically fetches fresh data from the server every 5 seconds, providing near real-time visibility into team activity.
+
+### Dashboard Development
+
+**Installing Dependencies**
+
+```bash
+cd server/client
+npm install
+```
+
+**Development Mode**
+
+Run the Vite dev server with hot module replacement:
+
+```bash
+cd server/client
+npm run dev
+```
+
+The dev server runs on port 5173 with proxy configuration for API routes (`/activities`, `/patches`, `/health`).
+
+**Building for Production**
+
+```bash
+cd server/client
+npm run build
+```
+
+This compiles the React app to `server/public/` for serving by the Express server.
+
+**Dashboard Components**
+
+- `App.tsx`: Main application with MUI ThemeProvider, tab navigation, and data loading
+- `components/RepositoriesPanel.tsx`: Repository aggregation and display
+- `components/UsersPanel.tsx`: User activity summary and display
+- `components/PatchesPanel.tsx`: Patch cards with expandable diff viewer
+- `api.ts`: Axios client for fetching activities and patches
+- `types.ts`: TypeScript interfaces for Activity, Patch, Repository, UserData
 
 ## Plugin Features
 

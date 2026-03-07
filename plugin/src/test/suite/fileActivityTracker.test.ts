@@ -1,5 +1,5 @@
 import * as assert from "assert";
-import { FileActivityTracker } from "../../fileActivityTracker";
+import { FileActivityTracker, isGitInternalPath } from "../../fileActivityTracker";
 import { ApiClient } from "../../apiClient";
 import * as vscode from "vscode";
 
@@ -85,5 +85,21 @@ suite("FileActivityTracker Test Suite", () => {
         const remoteUrl = await tracker.getCurrentRepositoryRemoteUrl();
         // In test environment without git, this may return undefined
         assert.ok(remoteUrl === undefined || typeof remoteUrl === "string");
+    });
+
+    test("isGitInternalPath should detect .git directory files", () => {
+        assert.strictEqual(isGitInternalPath("/repo/.git/config"), true);
+        assert.strictEqual(isGitInternalPath("/repo/.git/index"), true);
+        assert.strictEqual(isGitInternalPath("C:/repo/.git/HEAD"), true);
+    });
+
+    test("isGitInternalPath should detect trailing .git filenames", () => {
+        assert.strictEqual(isGitInternalPath("/repo/package-lock.json.git"), true);
+        assert.strictEqual(isGitInternalPath("/repo/something.git"), true);
+    });
+
+    test("isGitInternalPath should ignore normal project files", () => {
+        assert.strictEqual(isGitInternalPath("/repo/package-lock.json"), false);
+        assert.strictEqual(isGitInternalPath("/repo/src/file.ts"), false);
     });
 });

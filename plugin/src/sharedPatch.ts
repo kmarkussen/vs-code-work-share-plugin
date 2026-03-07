@@ -1,0 +1,11 @@
+/**
+ * Shared patch model exchanged between extension clients via server API.
+ */
+export interface SharedPatch {
+    repositoryRemoteUrl: string;
+    userName: string;
+    repositoryFilePath: string;
+    baseCommit: string;
+    patch: string;
+    timestamp: Date;
+}

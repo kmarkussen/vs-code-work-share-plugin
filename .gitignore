@@ -1,8 +1,11 @@
 node_modules/
 out/
 .vscode-test/
+.vscode-test-user1/
+.vscode-test-user2/
 *.vsix
 .DS_Store
 dist/
 *.log
 .env
+server/public/

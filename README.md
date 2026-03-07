@@ -1,4 +1,4 @@
-# Work Share eDIT FROM USER 2
+# Work Share !! Edit from left monitor
 
 A collaborative VS Code extension with a remote server for tracking and sharing file activity across team members.
 
@@ -72,6 +72,22 @@ npm run dev:server
 ```
 
 The server will be available at `http://localhost:3000`
+
+### Server Dashboard
+
+The server includes a web-based dashboard for monitoring file activity and patches across your team.
+
+**Access the dashboard:**
+
+Open `http://localhost:3000` in your browser when the server is running.
+
+**Dashboard features:**
+
+- **Repositories Tab**: View all tracked repositories with activity counts, patch counts, and active users
+- **Users Tab**: See all team members, their recent activity, and which repositories they're working on
+- **Patches Tab**: Browse shared code patches with syntax-highlighted diffs, showing who submitted what changes
+
+The dashboard automatically refreshes every 5 seconds to display the latest activity.
 
 ### Developing the Plugin
 

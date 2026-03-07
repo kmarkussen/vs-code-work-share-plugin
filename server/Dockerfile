@@ -12,8 +12,11 @@ RUN npm install
 COPY tsconfig.json ./
 COPY src ./src
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript (server only)
+RUN npm run build:server
+
+# Copy pre-built client files
+COPY public ./public
 
 # Remove dev dependencies and source files after build
 RUN npm prune --production && \

@@ -1,12 +1,36 @@
 {
   "version": "0.2.0",
+  "compounds": [
+    {
+      "name": "Run Extension (Two Users)",
+      "configurations": [
+        "Run Extension (User 1)",
+        "Run Extension (User 2)"
+      ],
+      "stopAll": false
+    }
+  ],
   "configurations": [
     {
-      "name": "Run Extension",
+      "name": "Run Extension (User 1)",
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/plugin"
+        "--extensionDevelopmentPath=${workspaceFolder}/plugin",
+        "--user-data-dir=${workspaceFolder}/.vscode-test-user1"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/plugin/out/**/*.js"
+      ],
+      "preLaunchTask": "npm: compile - plugin"
+    },
+    {
+      "name": "Run Extension (User 2)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/plugin",
+        "--user-data-dir=${workspaceFolder}/.vscode-test-user2"
       ],
       "outFiles": [
         "${workspaceFolder}/plugin/out/**/*.js"
