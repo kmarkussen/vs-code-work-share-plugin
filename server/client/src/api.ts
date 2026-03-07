@@ -7,11 +7,15 @@ const api = axios.create({
 });
 
 export async function fetchActivities(): Promise<Activity[]> {
-    const response = await api.get("/activities");
+    const response = await api.get("/activities", {
+        params: { _: Date.now() },
+    });
     return response.data.activities || [];
 }
 
 export async function fetchPatches(): Promise<Patch[]> {
-    const response = await api.get("/patches");
+    const response = await api.get("/patches", {
+        params: { _: Date.now() },
+    });
     return response.data.patches || [];
 }

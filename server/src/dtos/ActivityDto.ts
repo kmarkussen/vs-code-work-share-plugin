@@ -1,4 +1,4 @@
-import { IsString, IsIn, IsISO8601 } from "class-validator";
+import { IsString, IsIn, IsISO8601, Matches } from "class-validator";
 
 /**
  * Activity payload received from VS Code plugin clients.
@@ -10,6 +10,7 @@ export class ActivityDto {
 
     /** Display name that identifies who performed the action. */
     @IsString()
+    @Matches(/\S/, { message: "userName must contain non-whitespace characters" })
     userName!: string;
 
     /** Client-side event timestamp in ISO 8601 format. */

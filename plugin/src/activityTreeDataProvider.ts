@@ -13,7 +13,7 @@ interface DirectoryTree {
     files: Map<string, FileActivity[]>;
 }
 
-type TreeItemKind = "repository" | "user" | "directory" | "file" | "activity" | "placeholder" | "status";
+type TreeItemKind = "repository" | "user" | "directory" | "file" | "activity" | "placeholder" | "status" | "context" | "sharing-status";
 
 /**
  * Provides tree view items backed by local tracker state and server activity.
@@ -180,13 +180,24 @@ export class ActivityTreeDataProvider implements vscode.TreeDataProvider<WorkSha
      */
     getChildren(element?: WorkShareTreeItem): Thenable<WorkShareTreeItem[]> {
         if (!element) {
-            return this.getScopedActivities().then(({ repositoryRemoteUrl, activities }) => {
+            return this.getScopedActivities().then(async ({ repositoryRemoteUrl, activities }) => {
+                const currentUserName = await this.tracker.getCurrentUserName();
+                const repositoryLabel = this.getRepositoryLabel(repositoryRemoteUrl);
+                const isActivelySharing = await this.tracker.isActivelySharingActivity();
+                
                 const rootItems = [
-                    WorkShareTreeItem.repository(
-                        this.getRepositoryLabel(repositoryRemoteUrl),
-                        repositoryRemoteUrl,
-                        activities,
+                    WorkShareTreeItem.sharingStatus(isActivelySharing),
+                    WorkShareTreeItem.context(
+                        `Current User: ${currentUserName}`,
+                        "account",
+                        "User identity used when posting activity and patches.",
                     ),
+                    WorkShareTreeItem.context(
+                        repositoryLabel,
+                        "repo",
+                        repositoryRemoteUrl ?? "No active repository detected from current workspace/editor context.",
+                    ),
+                    WorkShareTreeItem.repository(repositoryLabel, repositoryRemoteUrl, activities),
                 ];
 
                 const connectionIssue = this.apiClient.getConnectionIssue();
@@ -213,11 +224,15 @@ export class ActivityTreeDataProvider implements vscode.TreeDataProvider<WorkSha
                 activitiesByUser.get(activity.userName)!.push(activity);
             }
 
-            const userItems = Array.from(activitiesByUser.entries())
-                .sort(([left], [right]) => left.localeCompare(right))
-                .map(([userName, userActivities]) => WorkShareTreeItem.user(userName, userActivities));
+            return this.tracker.getCurrentUserName().then((currentUserName) => {
+                const userItems = Array.from(activitiesByUser.entries())
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([userName, userActivities]) =>
+                        WorkShareTreeItem.user(userName, userActivities, userName === currentUserName),
+                    );
 
-            return Promise.resolve(userItems);
+                return userItems;
+            });
         }
 
         if (element.kind === "user") {
@@ -311,10 +326,10 @@ class WorkShareTreeItem extends vscode.TreeItem {
         return item;
     }
 
-    static user(userName: string, activities: FileActivity[]): WorkShareTreeItem {
+    static user(userName: string, activities: FileActivity[], isCurrentUser = false): WorkShareTreeItem {
         const item = new WorkShareTreeItem(
             "user",
-            userName,
+            isCurrentUser ? `${userName} (You)` : userName,
             vscode.TreeItemCollapsibleState.Collapsed,
             undefined,
             activities,
@@ -392,6 +407,28 @@ class WorkShareTreeItem extends vscode.TreeItem {
         const item = new WorkShareTreeItem("status", label, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon(level === "error" ? "error" : "warning");
         item.tooltip = label;
+        return item;
+    }
+
+    static sharingStatus(isActivelySharing: boolean): WorkShareTreeItem {
+        const label = isActivelySharing ? "● Sharing Activity (Active)" : "● Sharing Activity (Inactive)";
+        const item = new WorkShareTreeItem("sharing-status", label, vscode.TreeItemCollapsibleState.None);
+        
+        if (isActivelySharing) {
+            item.iconPath = new vscode.ThemeIcon("pass");
+            item.tooltip = "✓ User identity resolved. Activity is being shared.";
+        } else {
+            item.iconPath = new vscode.ThemeIcon("warning");
+            item.tooltip = "⚠ User identity not resolved. Set workShare.userName or git user.name to enable sharing.";
+        }
+        
+        return item;
+    }
+
+    static context(label: string, iconId: string, tooltip: string): WorkShareTreeItem {
+        const item = new WorkShareTreeItem("context", label, vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon(iconId);
+        item.tooltip = tooltip;
         return item;
     }
 }

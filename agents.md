@@ -72,6 +72,141 @@ work-share/
 - Patch view: Expandable cards with syntax-highlighted diffs
 - Built with Vite and served as static files from server
 
+## AI Agent Quick Reference
+
+This section provides quick guidance for AI agents to efficiently navigate the project and perform common validation tasks.
+
+### Project Paths
+
+**Workspace Root:** `/home/markusse/projects/vs-code-plugins/work-share`
+
+**Key Directories:**
+
+- Plugin source: `/home/markusse/projects/vs-code-plugins/work-share/plugin/src/`
+- Plugin compiled output: `/home/markusse/projects/vs-code-plugins/work-share/plugin/out/`
+- Server source: `/home/markusse/projects/vs-code-plugins/work-share/server/src/`
+- Dashboard source: `/home/markusse/projects/vs-code-plugins/work-share/server/client/src/`
+
+### Working Directory Guidelines
+
+**Always use absolute paths** when changing directories in terminal commands, especially when the current working directory is uncertain:
+
+```bash
+# Correct - Use absolute paths
+cd /home/markusse/projects/vs-code-plugins/work-share/plugin && npm test
+
+# May fail - Relative paths depend on current directory
+cd plugin && npm test
+```
+
+**From workspace root**, relative paths work:
+
+```bash
+cd plugin && npm run compile
+cd server && npm run dev
+```
+
+### Quick Validation Workflow
+
+After making changes to **plugin** code, run these commands in sequence:
+
+```bash
+# 1. Compile TypeScript (must succeed before proceeding)
+cd /home/markusse/projects/vs-code-plugins/work-share/plugin && npm run compile
+
+# 2. Run linter (warnings are okay, errors must be fixed)
+cd /home/markusse/projects/vs-code-plugins/work-share/plugin && npm run lint
+
+# 3. Run tests (all must pass)
+cd /home/markusse/projects/vs-code-plugins/work-share/plugin && npm test
+```
+
+After making changes to **server** code:
+
+```bash
+# 1. Compile TypeScript
+cd /home/markusse/projects/vs-code-plugins/work-share/server && npm run compile
+
+# 2. Run linter
+cd /home/markusse/projects/vs-code-plugins/work-share/server && npm run lint
+```
+
+### Common Commands by Component
+
+**Plugin Commands** (run from `/home/markusse/projects/vs-code-plugins/work-share/plugin/`):
+
+```bash
+npm run compile          # Compile TypeScript to out/ directory
+npm run watch            # Compile in watch mode (auto-recompile)
+npm run lint             # Run ESLint checks
+npm test                 # Run all tests (includes compile + lint)
+```
+
+**Server Commands** (run from `/home/markusse/projects/vs-code-plugins/work-share/server/`):
+
+```bash
+npm run compile          # Compile TypeScript
+npm run dev              # Start development server with hot-reload
+npm run lint             # Run ESLint checks
+```
+
+**Dashboard Commands** (run from `/home/markusse/projects/vs-code-plugins/work-share/server/client/`):
+
+```bash
+npm run dev              # Start Vite dev server on port 5173
+npm run build            # Build for production to ../public/
+```
+
+**Root Commands** (run from `/home/markusse/projects/vs-code-plugins/work-share/`):
+
+```bash
+npm run build            # Build both plugin and server
+npm test                 # Run plugin tests
+npm run lint             # Lint both components
+npm start                # Start server in Docker
+npm stop                 # Stop Docker containers
+```
+
+### File Editing Best Practices
+
+When modifying code files:
+
+1. **Read enough context**: Include surrounding code to understand the full scope
+2. **Verify compilation**: Always compile after edits to catch TypeScript errors
+3. **Update tests**: If adding new commands or features, update test files in `plugin/src/test/suite/`
+4. **Check for errors**: Use `get_errors` tool to check for TypeScript/lint issues
+
+### Testing Shortcuts
+
+**Quick test check** (without full test run):
+
+```bash
+cd /home/markusse/projects/vs-code-plugins/work-share/plugin && npm run compile && npm run lint
+```
+
+**Run specific test file** (after navigating to plugin directory):
+
+```bash
+npm test -- --grep "Extension Test Suite"
+```
+
+**Check test file registration**:
+All test files in `plugin/src/test/suite/*.test.ts` are automatically discovered, no manual registration needed.
+
+### Common Issues and Solutions
+
+**Issue:** `cd plugin` fails with "No such file or directory"
+**Solution:** Use absolute path or ensure current directory is workspace root
+
+**Issue:** TypeScript compilation errors after editing
+**Solution:** Run `npm run compile` from plugin or server directory to see detailed errors
+
+**Issue:** Tests fail with module import errors
+**Solution:** Ensure `npm install` has been run in the plugin directory
+
+**Issue:** Changes not reflected in Extension Development Host
+**Solution:** Stop debugging (Shift+F5), run `npm run compile` in plugin directory, then restart (F5)
+
 ## Root-Level Scripts
 
 The project includes a root-level `package.json` with convenient scripts for working with both components:
@@ -143,6 +278,46 @@ npm run clean            # Remove build artifacts and node_modules from both
 npm run clean:plugin     # Clean plugin directory
 npm run clean:server     # Clean server directory
 ```
+
+### Packaging Scripts
+
+Package the VS Code extension into a distributable VSIX file:
+
+```bash
+npm run package              # Create production-ready VSIX file
+npm run package:prerelease   # Create pre-release VSIX file (for beta testing)
+```
+
+The packaging script (`scripts/package-extension.sh`) performs the following:
+
+1. **Compiles TypeScript**: Builds the plugin source code
+2. **Creates VSIX file**: Uses `@vscode/vsce` to package the extension
+3. **Displays instructions**: Shows how to install, share, or publish the extension
+
+**Requirements:**
+
+- Node.js 20+ recommended (vsce compatibility)
+- All dependencies installed (`npm install`)
+
+**Output:**
+
+- Location: `plugin/work-share-<version>.vsix`
+- The VSIX file can be:
+    - Installed locally via VS Code Extensions menu → "..." → "Install from VSIX..."
+    - Shared with team members for testing
+    - Published to VS Code Marketplace (requires publisher account)
+
+**Documentation:**
+
+- [VS Code Extension Publishing Guide](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)
+- [VSCE CLI Documentation](https://github.com/microsoft/vscode-vsce)
+- [Creating VS Code Extensions](https://code.visualstudio.com/api/get-started/your-first-extension)
+
+**Troubleshooting:**
+
+- If you encounter Node version errors, upgrade to Node.js 20+:
+    - Direct download: https://nodejs.org/
+    - Or use nvm: `nvm install 20 && nvm use 20`
 
 ## Running the Application
 
@@ -361,22 +536,22 @@ The dashboard source code is located in `server/client/` and builds to `server/p
 **Three-Tab Interface**
 
 1. **Repositories Tab**
-   - Displays all tracked repositories from git remote URLs
-   - Shows activity count and patch count per repository
-   - Lists active users for each repository (top 5 displayed)
-   - Responsive card grid layout with folder icons
+    - Displays all tracked repositories from git remote URLs
+    - Shows activity count and patch count per repository
+    - Lists active users for each repository (top 5 displayed)
+    - Responsive card grid layout with folder icons
 
 2. **Users Tab**
-   - Shows all team members who have submitted activity or patches
-   - Displays last activity timestamp with relative time formatting ("5m ago", "2h ago")
-   - Lists repositories each user is working on
-   - Avatar icons for visual identification
+    - Shows all team members who have submitted activity or patches
+    - Displays last activity timestamp with relative time formatting ("5m ago", "2h ago")
+    - Lists repositories each user is working on
+    - Avatar icons for visual identification
 
 3. **Patches Tab**
-   - Shows all shared code patches in expandable cards
-   - Syntax-highlighted diff viewer in monospace font
-   - Metadata chips display: username, repository, timestamp, base commit
-   - Collapsible content to save screen space
+    - Shows all shared code patches in expandable cards
+    - Syntax-highlighted diff viewer in monospace font
+    - Metadata chips display: username, repository, timestamp, base commit
+    - Collapsible content to save screen space
 
 **Auto-Refresh**
 
@@ -426,7 +601,27 @@ This compiles the React app to `server/public/` for serving by the Express serve
 
 2. **Real-time Updates**: The plugin will provide real-time updates on file activity, allowing team members to see changes as they happen.
 
-3. Variables
+3. **Toggle Tracking Button**: A UI toggle button in the Work Share sidebar allows users to enable/disable tracking with a single click. The button shows an eye icon (enabled) or eye-closed icon (disabled) and updates the `workShare.enabled` configuration setting.
+
+4. **Conflict Detection**: The plugin can check for potential merge conflicts by comparing local changes against incoming patches from other team members.
+
+### Registered Commands
+
+The plugin registers the following commands that can be invoked via the command palette or UI:
+
+- **`work-share.showFileActivity`**: Opens the file activity view and refreshes the display
+- **`work-share.configure`**: Opens VS Code settings focused on Work Share configuration
+- **`work-share.toggleTracking`**: Toggles the `workShare.enabled` setting on/off and provides user feedback
+- **`work-share.checkActiveFileConflicts`**: Checks the currently active file for potential merge conflicts from incoming patches
+- **`work-share.checkProjectConflicts`**: Scans all tracked files in the project for potential merge conflicts
+
+**Note:** When adding new commands, ensure they are:
+
+1. Registered in `plugin/package.json` under `contributes.commands`
+2. Implemented in `plugin/src/extension.ts` with `vscode.commands.registerCommand`
+3. Added to tests in `plugin/src/test/suite/extension.test.ts`
+
+### Configuration Variables
 
 - **User Identification**: The plugin will identify users based on their VS Code profiles or through integration with a team collaboration tool (e.g., Slack, Microsoft Teams).
 - **API Servers URL**: The plugin will support modifying the server URL for reporting file activity.
@@ -561,8 +756,9 @@ suite("My Test Suite", () => {
 
 1. **Extension Activation** (`extension.test.ts`)
     - Verifies extension loads correctly
-    - Checks command registration
+    - Checks command registration (including `toggleTracking`, `checkActiveFileConflicts`, `checkProjectConflicts`)
     - Validates default configuration
+    - Tests toggle tracking command behavior
 
 2. **API Client** (`apiClient.test.ts`)
     - Tests API initialization

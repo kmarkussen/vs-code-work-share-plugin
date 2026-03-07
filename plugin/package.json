@@ -25,6 +25,11 @@
         "title": "Work Share: Configure Settings"
       },
       {
+        "command": "work-share.toggleTracking",
+        "title": "Work Share: Toggle Tracking",
+        "icon": "$(eye)"
+      },
+      {
         "command": "work-share.checkActiveFileConflicts",
         "title": "Work Share: Check Active File Conflicts",
         "icon": "$(warning)"
@@ -38,14 +43,25 @@
     "menus": {
       "view/title": [
         {
+          "command": "work-share.toggleTracking",
+          "when": "view == workShareActivity && workShare.isTrackingEnabled",
+          "group": "navigation@1"
+        },
+        {
+          "command": "work-share.toggleTracking",
+          "when": "view == workShareActivity && !workShare.isTrackingEnabled",
+          "group": "navigation@1",
+          "icon": "$(eye-closed)"
+        },
+        {
           "command": "work-share.checkActiveFileConflicts",
           "when": "view == workShareActivity",
-          "group": "navigation@1"
+          "group": "navigation@2"
         },
         {
           "command": "work-share.checkProjectConflicts",
           "when": "view == workShareActivity",
-          "group": "navigation@2"
+          "group": "navigation@3"
         }
       ]
     },
@@ -103,19 +119,22 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "package:prerelease": "vsce package --pre-release"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
-    "@types/node": "18.x",
     "@types/mocha": "^10.0.6",
+    "@types/node": "18.x",
+    "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^3.7.1",
     "eslint": "^8.54.0",
     "glob": "^10.3.10",
     "mocha": "^10.2.0",
-    "typescript": "^5.3.2",
-    "@vscode/test-electron": "^2.3.8"
+    "typescript": "^5.3.2"
   },
   "dependencies": {
     "axios": "^1.6.0"

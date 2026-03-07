@@ -2,60 +2,17 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
 import * as fs from "fs/promises";
-import { createHash } from "crypto";
-import { spawn } from "child_process";
 import { ApiClient } from "./apiClient";
 import { SharedPatch } from "./sharedPatch";
 import { OutputLogger } from "./outputLogger";
+import { isGitInternalPath } from "./fileActivity/pathUtils";
+import { ConflictStatus, FileActivity } from "./fileActivity/types";
+import { GitContextService } from "./fileActivity/gitContext";
+import { UserIdentityService } from "./fileActivity/identityService";
+import { PatchSharingService } from "./fileActivity/patchSharingService";
 
-/**
- * Returns true when the path points to a git internal file/directory.
- */
-export function isGitInternalPath(filePath: string): boolean {
-    const normalizedPath = filePath.replace(/\\/g, "/");
-    return normalizedPath.includes("/.git/") || normalizedPath.endsWith("/.git") || normalizedPath.endsWith(".git");
-}
-
-/**
- * Normalized activity payload used by the plugin and API client.
- */
-export interface FileActivity {
-    filePath: string;
-    userName: string;
-    timestamp: Date;
-    action: "open" | "edit" | "close";
-    /** Remote URL identifying the Git repository scope for the activity. */
-    repositoryRemoteUrl: string;
-}
-
-/**
- * Conflict prediction status for a repository-relative file.
- */
-export type ConflictStatus = "clean" | "conflict" | "unknown";
-
-interface GitRemote {
-    name: string;
-    fetchUrl?: string;
-    pushUrl?: string;
-}
-
-interface GitRepository {
-    rootUri: vscode.Uri;
-    getConfig(key: string): Promise<string | undefined>;
-    state?: {
-        remotes?: GitRemote[];
-    };
-    /** Checks if a file path is ignored by git. */
-    isIgnored(uri: vscode.Uri): Promise<boolean>;
-}
-
-interface GitApi {
-    repositories: GitRepository[];
-}
-
-interface GitExtensionExports {
-    getAPI(version: number): GitApi;
-}
+export { isGitInternalPath } from "./fileActivity/pathUtils";
+export type { ConflictStatus, FileActivity } from "./fileActivity/types";
 
 /**
  * Tracks editor file events and reports repository-scoped activity to the server.
@@ -64,171 +21,37 @@ export class FileActivityTracker {
     private disposables: vscode.Disposable[] = [];
     private activities: Map<string, FileActivity> = new Map();
     private updateTimer: NodeJS.Timeout | undefined;
-    private gitUserName: string | undefined;
-    private gitApi: GitApi | undefined;
-    private gitInitializationPromise: Promise<void> | undefined;
     private lastActiveEditorFilePath: string | undefined;
     private lastActiveEditorChangeAt = 0;
-    private lastSharedPatchDigestByFile: Map<string, string> = new Map();
+    private gitContext: GitContextService;
+    private identityService: UserIdentityService;
+    private patchSharingService: PatchSharingService;
 
     constructor(
         private context: vscode.ExtensionContext,
         private apiClient: ApiClient,
         private logger?: OutputLogger,
     ) {
-        void this.initializeGitContext();
-    }
-
-    private async initializeGitContext(): Promise<void> {
-        if (this.gitInitializationPromise) {
-            return this.gitInitializationPromise;
-        }
-
-        this.gitInitializationPromise = (async () => {
-            try {
-                const gitExtension = vscode.extensions.getExtension<GitExtensionExports>("vscode.git");
-                if (!gitExtension) {
-                    return;
-                }
-
-                if (!gitExtension.isActive) {
-                    await gitExtension.activate();
-                }
-
-                const gitExports = gitExtension.exports;
-                this.gitApi = gitExports.getAPI(1);
-                if (this.gitApi.repositories.length > 0) {
-                    await this.updateGitUserName(this.gitApi.repositories[0]);
-                }
-            } catch (error) {
-                console.error("Failed to initialize git context:", error);
-            }
-        })();
-
-        return this.gitInitializationPromise;
-    }
-
-    private async updateGitUserName(repository: GitRepository) {
-        try {
-            const config = await repository.getConfig("user.name");
-            this.gitUserName = config;
-        } catch (error) {
-            console.error("Failed to get git user name:", error);
-        }
-    }
-
-    private resolveRepositoryForFile(filePath: string): GitRepository | undefined {
-        if (!this.gitApi || this.gitApi.repositories.length === 0) {
-            return undefined;
-        }
-
-        // Match by repo root path prefix to support multi-root workspaces.
-        const normalizedFilePath = filePath.replace(/\\/g, "/");
-        return this.gitApi.repositories.find((repository) => {
-            const repoPath = repository.rootUri.fsPath.replace(/\\/g, "/");
-            return normalizedFilePath === repoPath || normalizedFilePath.startsWith(`${repoPath}/`);
-        });
-    }
-
-    private async getRepositoryRemoteUrlForRepository(repository: GitRepository): Promise<string | undefined> {
-        try {
-            // Prefer canonical origin URL from git config when available.
-            const remoteFromConfig = await repository.getConfig("remote.origin.url");
-            if (remoteFromConfig) {
-                return remoteFromConfig;
-            }
-        } catch (error) {
-            console.error("Failed to read remote origin URL from git config:", error);
-        }
-
-        // Fallback to Git extension remote metadata.
-        const originRemote = repository.state?.remotes?.find((remote) => remote.name === "origin");
-        return originRemote?.fetchUrl ?? originRemote?.pushUrl;
-    }
-
-    private async getRepositoryRemoteUrl(filePath: string): Promise<string | undefined> {
-        await this.initializeGitContext();
-        const repository = this.resolveRepositoryForFile(filePath);
-        if (!repository) {
-            return undefined;
-        }
-
-        return this.getRepositoryRemoteUrlForRepository(repository);
-    }
-
-    private getRepositoryRelativeFilePath(filePath: string): string | undefined {
-        const repository = this.resolveRepositoryForFile(filePath);
-        if (!repository) {
-            return undefined;
-        }
-
-        return path.relative(repository.rootUri.fsPath, filePath).replace(/\\/g, "/");
-    }
-
-    private async resolveRepositoryByRemoteUrl(repositoryRemoteUrl: string): Promise<GitRepository | undefined> {
-        await this.initializeGitContext();
-        if (!this.gitApi) {
-            return undefined;
-        }
-
-        for (const repository of this.gitApi.repositories) {
-            const remoteUrl = await this.getRepositoryRemoteUrlForRepository(repository);
-            if (remoteUrl === repositoryRemoteUrl) {
-                return repository;
-            }
-        }
-
-        return undefined;
-    }
-
-    private resolveWorkspaceRepository(): GitRepository | undefined {
-        if (!this.gitApi || this.gitApi.repositories.length === 0) {
-            return undefined;
-        }
-
-        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
-        for (const workspaceFolder of workspaceFolders) {
-            const workspacePath = workspaceFolder.uri.fsPath.replace(/\\/g, "/");
-            const matchingRepository = this.gitApi.repositories.find((repository) => {
-                const repositoryPath = repository.rootUri.fsPath.replace(/\\/g, "/");
-                return repositoryPath === workspacePath || workspacePath.startsWith(`${repositoryPath}/`);
-            });
-
-            if (matchingRepository) {
-                return matchingRepository;
-            }
-        }
-
-        return this.gitApi.repositories[0];
-    }
-
-    /**
-     * Checks if a file is ignored by git to avoid tracking build artifacts, dependencies, etc.
-     */
-    private async isFileIgnoredByGit(filePath: string): Promise<boolean> {
-        await this.initializeGitContext();
-        const repository = this.resolveRepositoryForFile(filePath);
-        if (!repository) {
-            return false;
-        }
-
-        try {
-            return await repository.isIgnored(vscode.Uri.file(filePath));
-        } catch (error) {
-            console.error("Failed to check if file is ignored:", error);
-            return false;
-        }
+        this.gitContext = new GitContextService();
+        this.identityService = new UserIdentityService(this.gitContext, logger);
+        this.patchSharingService = new PatchSharingService(
+            this.gitContext,
+            this.identityService,
+            this.apiClient,
+            logger,
+        );
+        void this.identityService.initialize();
     }
 
     /**
      * Resolves the active repository remote URL used for filtering visible activity.
      */
     public async getCurrentRepositoryRemoteUrl(): Promise<string | undefined> {
-        await this.initializeGitContext();
+        await this.gitContext.initialize();
 
         const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath;
         if (activeFilePath) {
-            return this.getRepositoryRemoteUrl(activeFilePath);
+            return this.gitContext.getRepositoryRemoteUrl(activeFilePath);
         }
 
         const firstActivity = this.activities.values().next().value as FileActivity | undefined;
@@ -236,27 +59,28 @@ export class FileActivityTracker {
             return firstActivity.repositoryRemoteUrl;
         }
 
-        const workspaceRepository = this.resolveWorkspaceRepository();
+        const workspaceRepository = this.gitContext.resolveWorkspaceRepository();
         if (workspaceRepository) {
-            return this.getRepositoryRemoteUrlForRepository(workspaceRepository);
+            return this.gitContext.getRepositoryRemoteUrlForRepository(workspaceRepository);
         }
 
         return undefined;
     }
 
-    private getUserName(): string {
-        const config = vscode.workspace.getConfiguration("workShare");
-        const configuredName = config.get<string>("userName");
+    /**
+     * Returns the resolved current user identity used for activity and patch payloads.
+     */
+    public async getCurrentUserName(filePath?: string): Promise<string> {
+        return this.identityService.getCurrentUserName(filePath);
+    }
 
-        if (configuredName) {
-            return configuredName;
-        }
-
-        if (this.gitUserName) {
-            return this.gitUserName;
-        }
-
-        return "Unknown User";
+    /**
+     * Determines if the user is actively sharing (identity resolved and no connection issues).
+     * Used by the tree view to display sharing status icon.
+     */
+    public async isActivelySharingActivity(): Promise<boolean> {
+        const identifiedName = await this.identityService.resolveIdentifiedUserName();
+        return !!identifiedName;
     }
 
     /**
@@ -270,127 +94,6 @@ export class FileActivityTracker {
 
         // VS Code can update active editor immediately before close is emitted.
         return this.lastActiveEditorFilePath === filePath && Date.now() - this.lastActiveEditorChangeAt <= 500;
-    }
-
-    /**
-     * Runs a git command in a target directory.
-     */
-    private async runGitCommand(
-        workingDirectory: string,
-        args: string[],
-    ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-        return new Promise((resolve, reject) => {
-            const childProcess = spawn("git", args, {
-                cwd: workingDirectory,
-                stdio: ["ignore", "pipe", "pipe"],
-            });
-
-            let stdout = "";
-            let stderr = "";
-
-            childProcess.stdout.on("data", (data: Buffer) => {
-                stdout += data.toString();
-            });
-
-            childProcess.stderr.on("data", (data: Buffer) => {
-                stderr += data.toString();
-            });
-
-            childProcess.on("error", reject);
-            childProcess.on("close", (exitCode) => {
-                resolve({
-                    stdout,
-                    stderr,
-                    exitCode: exitCode ?? 1,
-                });
-            });
-        });
-    }
-
-    /**
-     * Generates and shares a repository-relative patch for a saved file.
-     */
-    private async sharePatchForFile(filePath: string): Promise<void> {
-        if (!vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))) {
-            this.logger?.info("Patch sharing skipped: file is outside workspace.", { filePath });
-            return;
-        }
-
-        if (isGitInternalPath(filePath) || (await this.isFileIgnoredByGit(filePath))) {
-            this.logger?.info("Patch sharing skipped: file is git-internal or ignored.", { filePath });
-            return;
-        }
-
-        const repository = this.resolveRepositoryForFile(filePath);
-        if (!repository) {
-            this.logger?.warn("Patch sharing skipped: no git repository resolved for file.", { filePath });
-            return;
-        }
-
-        const repositoryRemoteUrl = await this.getRepositoryRemoteUrlForRepository(repository);
-        if (!repositoryRemoteUrl) {
-            this.logger?.warn("Patch sharing skipped: repository remote URL not found.", { filePath });
-            return;
-        }
-
-        const repositoryFilePath = this.getRepositoryRelativeFilePath(filePath);
-        if (!repositoryFilePath) {
-            this.logger?.warn("Patch sharing skipped: unable to resolve repository-relative file path.", { filePath });
-            return;
-        }
-
-        const repositoryRootPath = repository.rootUri.fsPath;
-        const baseCommitResult = await this.runGitCommand(repositoryRootPath, ["rev-parse", "HEAD"]);
-        if (baseCommitResult.exitCode !== 0) {
-            this.logger?.error("Patch sharing failed: could not resolve base commit.", {
-                filePath,
-                stderr: baseCommitResult.stderr,
-            });
-            return;
-        }
-
-        const baseCommit = baseCommitResult.stdout.trim();
-        const patchResult = await this.runGitCommand(repositoryRootPath, ["diff", "--", repositoryFilePath]);
-        if (patchResult.exitCode !== 0) {
-            this.logger?.error("Patch sharing failed: git diff command failed.", {
-                filePath,
-                repositoryFilePath,
-                stderr: patchResult.stderr,
-            });
-            return;
-        }
-
-        const patchText = patchResult.stdout;
-        if (!patchText.trim()) {
-            this.logger?.info("Patch sharing skipped: no unstaged diff to share.", { repositoryFilePath });
-            return;
-        }
-
-        const patchDigest = createHash("sha256").update(baseCommit).update("\n").update(patchText).digest("hex");
-
-        if (this.lastSharedPatchDigestByFile.get(filePath) === patchDigest) {
-            this.logger?.info("Patch sharing skipped: duplicate patch digest.", { repositoryFilePath });
-            return;
-        }
-
-        this.lastSharedPatchDigestByFile.set(filePath, patchDigest);
-
-        this.logger?.info("Patch generated for sharing.", {
-            repositoryRemoteUrl,
-            repositoryFilePath,
-            baseCommit,
-            patchLength: patchText.length,
-            patchDigest,
-        });
-
-        await this.apiClient.sendPatch({
-            repositoryRemoteUrl,
-            userName: this.getUserName(),
-            repositoryFilePath,
-            baseCommit,
-            patch: patchText,
-            timestamp: new Date(),
-        });
     }
 
     /**
@@ -429,7 +132,7 @@ export class FileActivityTracker {
 
             // Run a dry-run 3-way apply against the receiver's current working tree.
             // This reports conflicts with local edits without mutating files.
-            const applyCheckResult = await this.runGitCommand(repositoryRootPath, [
+            const applyCheckResult = await this.gitContext.runGitCommand(repositoryRootPath, [
                 "apply",
                 "--3way",
                 "--check",
@@ -456,6 +159,8 @@ export class FileActivityTracker {
         repositoryRemoteUrl: string | undefined,
         repositoryRelativeFilePaths: string[],
     ): Promise<Map<string, ConflictStatus>> {
+        await this.identityService.getCurrentUserName();
+
         const statuses = new Map<string, ConflictStatus>();
         for (const filePath of repositoryRelativeFilePaths) {
             statuses.set(filePath, "clean");
@@ -465,7 +170,7 @@ export class FileActivityTracker {
             return statuses;
         }
 
-        const repository = await this.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
+        const repository = await this.gitContext.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
         if (!repository) {
             for (const filePath of repositoryRelativeFilePaths) {
                 statuses.set(filePath, "unknown");
@@ -475,7 +180,7 @@ export class FileActivityTracker {
         }
 
         const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl });
-        const currentUserName = this.getUserName();
+        const currentUserName = await this.identityService.getCurrentUserName();
         const relevantPatches = incomingPatches.filter(
             (patch) =>
                 patch.userName !== currentUserName && repositoryRelativeFilePaths.includes(patch.repositoryFilePath),
@@ -526,8 +231,8 @@ export class FileActivityTracker {
      * Checks conflict status for a single absolute file path.
      */
     public async checkConflictStatusForFile(filePath: string): Promise<ConflictStatus> {
-        const repositoryRemoteUrl = await this.getRepositoryRemoteUrl(filePath);
-        const repositoryFilePath = this.getRepositoryRelativeFilePath(filePath);
+        const repositoryRemoteUrl = await this.gitContext.getRepositoryRemoteUrl(filePath);
+        const repositoryFilePath = this.gitContext.getRepositoryRelativeFilePath(filePath);
         if (!repositoryFilePath) {
             return "unknown";
         }
@@ -554,7 +259,7 @@ export class FileActivityTracker {
             };
         }
 
-        const currentUserName = this.getUserName();
+        const currentUserName = await this.identityService.getCurrentUserName();
         const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl });
         const repositoryRelativeFilePaths = Array.from(
             new Set(
@@ -601,8 +306,15 @@ export class FileActivityTracker {
     public start() {
         const config = vscode.workspace.getConfiguration("workShare");
         const enabled = config.get<boolean>("enabled", true);
+        const interval = config.get<number>("updateInterval", 5000);
+
+        this.logger?.info("File activity tracker starting.", {
+            enabled,
+            updateInterval: interval,
+        });
 
         if (!enabled) {
+            this.logger?.warn("File activity tracker is disabled by configuration.");
             return;
         }
 
@@ -615,7 +327,7 @@ export class FileActivityTracker {
                 this.lastActiveEditorFilePath = editor?.document.uri.fsPath;
                 this.lastActiveEditorChangeAt = Date.now();
                 if (editor) {
-                    this.trackActivity(editor.document.uri.fsPath, "open");
+                    void this.trackActivity(editor.document.uri.fsPath, "open");
                 }
             }),
         );
@@ -624,14 +336,14 @@ export class FileActivityTracker {
         this.disposables.push(
             vscode.workspace.onDidChangeTextDocument((event) => {
                 if (event.contentChanges.length > 0) {
-                    this.trackActivity(event.document.uri.fsPath, "edit");
+                    void this.trackActivity(event.document.uri.fsPath, "edit");
                 }
             }),
         );
 
         this.disposables.push(
             vscode.workspace.onDidSaveTextDocument((document) => {
-                void this.sharePatchForFile(document.uri.fsPath);
+                void this.patchSharingService.sharePatchForFile(document.uri.fsPath);
                 void this.autoCheckConflictsOnSave(document.uri.fsPath);
             }),
         );
@@ -640,7 +352,7 @@ export class FileActivityTracker {
         this.disposables.push(
             vscode.workspace.onDidCloseTextDocument((doc) => {
                 if (this.shouldTrackCloseEvent(doc.uri.fsPath)) {
-                    this.trackActivity(doc.uri.fsPath, "close");
+                    void this.trackActivity(doc.uri.fsPath, "close");
                 }
             }),
         );
@@ -671,7 +383,7 @@ export class FileActivityTracker {
         }
 
         this.updateTimer = setInterval(() => {
-            this.sendActivitiesToServer();
+            void this.sendActivitiesToServer();
         }, interval);
     }
 
@@ -687,24 +399,36 @@ export class FileActivityTracker {
         }
 
         // Ignore files that are in .gitignore
-        if (await this.isFileIgnoredByGit(filePath)) {
+        if (await this.gitContext.isFileIgnoredByGit(filePath)) {
             return;
         }
 
-        const repositoryRemoteUrl = await this.getRepositoryRemoteUrl(filePath);
+        const repositoryRemoteUrl = await this.gitContext.getRepositoryRemoteUrl(filePath);
         if (!repositoryRemoteUrl) {
+            return;
+        }
+
+        const userName = await this.identityService.resolveIdentifiedUserName(filePath);
+        if (!userName) {
+            this.identityService.logIdentityBlockedActivity(filePath, action);
             return;
         }
 
         const activity: FileActivity = {
             filePath,
-            userName: this.getUserName(),
+            userName,
             timestamp: new Date(),
             action,
             repositoryRemoteUrl,
         };
 
         this.activities.set(filePath, activity);
+        this.logger?.info("Activity enqueued.", {
+            filePath,
+            action,
+            userName,
+            queueSize: this.activities.size,
+        });
     }
 
     private async sendActivitiesToServer() {
@@ -713,16 +437,27 @@ export class FileActivityTracker {
         }
 
         const activitiesToSend = Array.from(this.activities.values());
+        this.logger?.info("Attempting to flush queued activities.", {
+            count: activitiesToSend.length,
+        });
 
         try {
             await this.apiClient.sendActivities(activitiesToSend);
             // Clear sent activities if close action
-            for (const [path, activity] of this.activities) {
+            for (const [pathKey, activity] of this.activities) {
                 if (activity.action === "close") {
-                    this.activities.delete(path);
+                    this.activities.delete(pathKey);
                 }
             }
+            this.logger?.info("Activity flush completed.", {
+                sentCount: activitiesToSend.length,
+                remainingQueueSize: this.activities.size,
+            });
         } catch (error) {
+            this.logger?.error("Activity flush failed.", {
+                message: error instanceof Error ? error.message : String(error),
+                attemptedCount: activitiesToSend.length,
+            });
             console.error("Failed to send activities to server:", error);
         }
     }
@@ -745,6 +480,7 @@ export class FileActivityTracker {
      * Restarts tracker state to apply latest configuration values.
      */
     public updateConfiguration() {
+        this.identityService.resetWarnings();
         this.stop();
         this.start();
     }

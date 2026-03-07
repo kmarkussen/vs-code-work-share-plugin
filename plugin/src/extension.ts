@@ -7,6 +7,15 @@ import { OutputLogger } from "./outputLogger";
 let fileActivityTracker: FileActivityTracker | undefined;
 
 /**
+ * Updates the context variable that controls toggle button icon visibility.
+ */
+async function updateTrackingContext(): Promise<void> {
+    const config = vscode.workspace.getConfiguration("workShare");
+    const enabled = config.get<boolean>("enabled", true);
+    await vscode.commands.executeCommand("setContext", "workShare.isTrackingEnabled", enabled);
+}
+
+/**
  * Activates the Work Share extension and registers commands, tracking, and tree view wiring.
  */
 export function activate(context: vscode.ExtensionContext) {
@@ -16,6 +25,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(outputChannel);
     const logger = new OutputLogger(outputChannel);
     logger.info("Extension activated.");
+
+    // Set initial tracking context for menu visibility
+    void updateTrackingContext();
 
     // Initialize API client
     const apiClient = new ApiClient(logger);
@@ -38,6 +50,20 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand("work-share.configure", async () => {
             await vscode.commands.executeCommand("workbench.action.openSettings", "workShare");
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.toggleTracking", async () => {
+            const config = vscode.workspace.getConfiguration("workShare");
+            const currentlyEnabled = config.get<boolean>("enabled", true);
+            await config.update("enabled", !currentlyEnabled, vscode.ConfigurationTarget.Global);
+
+            // Update context immediately for responsive UI
+            await updateTrackingContext();
+
+            const newState = !currentlyEnabled ? "enabled" : "disabled";
+            vscode.window.showInformationMessage(`Work Share: Tracking ${newState}.`);
         }),
     );
 
@@ -101,6 +127,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (e.affectsConfiguration("workShare")) {
                 apiClient.updateConfiguration();
                 fileActivityTracker?.updateConfiguration();
+                void updateTrackingContext();
                 logger.info("Configuration updated.");
             }
         }),

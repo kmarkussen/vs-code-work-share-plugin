@@ -30,7 +30,9 @@
     "try": "npm run try:setup && npm run try:launch",
     "try:setup": "npm run build:plugin && npm start && echo 'Waiting for server to start...' && sleep 3",
     "try:launch": "echo '\n✅ Server is running at http://localhost:3000\n✅ Plugin is built and ready\n\n📝 Next step: Press F5 in VS Code to launch Extension Development Host\n' && code .",
-    "try:stop": "npm stop"
+    "try:stop": "npm stop",
+    "package": "bash scripts/package-extension.sh",
+    "package:prerelease": "bash scripts/package-extension.sh --pre-release"
   },
   "keywords": [
     "vscode",

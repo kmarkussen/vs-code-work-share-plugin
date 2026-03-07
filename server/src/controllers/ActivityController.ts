@@ -1,4 +1,4 @@
-import { JsonController, Post, Body, Get, QueryParam } from "routing-controllers";
+import { JsonController, Post, Body, Get, QueryParam, BadRequestError } from "routing-controllers";
 import { ActivityBatchDto } from "../dtos/ActivityBatchDto";
 import { ActivityDto } from "../dtos/ActivityDto";
 import { PatchDto } from "../dtos/PatchDto";
@@ -18,14 +18,28 @@ interface StoredPatch extends PatchDto {
     receivedAt: string;
 }
 
+// Keep in-memory state at module scope so it persists even if controller instances are recreated per request.
+const activityStore: Map<string, StoredActivity[]> = new Map();
+const patchStore: Map<string, StoredPatch[]> = new Map();
+
+/**
+ * Validates caller identity and rejects ambiguous placeholders.
+ */
+function normalizeAndValidateIdentity(userName: string): string {
+    const normalizedUserName = userName.trim();
+    const normalizedLower = normalizedUserName.toLowerCase();
+    if (!normalizedUserName || normalizedLower === "unknown user" || normalizedLower === "unknown") {
+        throw new BadRequestError("Client identity is required. Configure workShare.userName or git user.name.");
+    }
+
+    return normalizedUserName;
+}
+
 /**
  * Handles ingestion and querying of repository-scoped file activity.
  */
 @JsonController()
 export class ActivityController {
-    private activities: Map<string, StoredActivity[]> = new Map();
-    private patches: Map<string, StoredPatch[]> = new Map();
-
     /**
      * Returns shared patches, optionally filtered by repository, file, and user.
      */
@@ -35,7 +49,7 @@ export class ActivityController {
         @QueryParam("repositoryFilePath") repositoryFilePath?: string,
         @QueryParam("userName") userName?: string,
     ) {
-        let patches = Array.from(this.patches.values()).flat();
+        let patches = Array.from(patchStore.values()).flat();
 
         if (repositoryRemoteUrl) {
             patches = patches.filter((patch) => patch.repositoryRemoteUrl === repositoryRemoteUrl);
@@ -62,12 +76,13 @@ export class ActivityController {
      */
     @Post("/patches")
     async receivePatch(@Body() patch: PatchDto) {
+        const normalizedUserName = normalizeAndValidateIdentity(patch.userName);
         const key = `${patch.repositoryRemoteUrl}:${patch.repositoryFilePath}`;
-        if (!this.patches.has(key)) {
-            this.patches.set(key, []);
+        if (!patchStore.has(key)) {
+            patchStore.set(key, []);
         }
 
-        const records = this.patches.get(key)!;
+        const records = patchStore.get(key)!;
         const existingPatch = records.find(
             (record) =>
                 record.userName === patch.userName &&
@@ -78,6 +93,7 @@ export class ActivityController {
         if (!existingPatch) {
             records.push({
                 ...patch,
+                userName: normalizedUserName,
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                 receivedAt: new Date().toISOString(),
             });
@@ -103,7 +119,7 @@ export class ActivityController {
         @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
         @QueryParam("userName") userName?: string,
     ) {
-        let activities = Array.from(this.activities.values()).flat();
+        let activities = Array.from(activityStore.values()).flat();
 
         if (repositoryRemoteUrl) {
             activities = activities.filter((activity) => activity.repositoryRemoteUrl === repositoryRemoteUrl);
@@ -128,15 +144,18 @@ export class ActivityController {
 
         // Process each activity
         body.activities.forEach((activity) => {
-            // Partition by repository + user + file so each stream is independently append-only.
-            const key = `${activity.repositoryRemoteUrl}:${activity.userName}:${activity.filePath}`;
+            const normalizedUserName = normalizeAndValidateIdentity(activity.userName);
 
-            if (!this.activities.has(key)) {
-                this.activities.set(key, []);
+            // Partition by repository + user + file so each stream is independently append-only.
+            const key = `${activity.repositoryRemoteUrl}:${normalizedUserName}:${activity.filePath}`;
+
+            if (!activityStore.has(key)) {
+                activityStore.set(key, []);
             }
 
-            this.activities.get(key)!.push({
+            activityStore.get(key)!.push({
                 ...activity,
+                userName: normalizedUserName,
                 receivedAt: new Date().toISOString(),
             });
 

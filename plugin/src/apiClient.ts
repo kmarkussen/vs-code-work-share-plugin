@@ -135,6 +135,23 @@ export class ApiClient {
         };
     }
 
+    private isIdentityRejected(error: unknown): boolean {
+        if (!axios.isAxiosError(error)) {
+            return false;
+        }
+
+        const responseMessage =
+            typeof error.response?.data === "object" && error.response?.data && "message" in error.response.data ?
+                String((error.response.data as { message?: unknown }).message ?? "")
+            :   "";
+
+        return error.response?.status === 400 && /identity is required/i.test(responseMessage);
+    }
+
+    private getIdentityRequiredMessage(): string {
+        return "Client identity missing. Set workShare.userName or git user.name.";
+    }
+
     /**
      * Sends local activity events to the remote API.
      */
@@ -168,6 +185,12 @@ export class ApiClient {
             this.markConnectionHealthy();
             this.logger?.info("POST /activities succeeded.", { count: payload.length });
         } catch (error) {
+            if (this.isIdentityRejected(error)) {
+                this.markConnectionError(this.getIdentityRequiredMessage());
+                this.logger?.error("POST /activities rejected: missing client identity.");
+                throw new Error(this.getIdentityRequiredMessage());
+            }
+
             this.markConnectionError("Unable to send activities to Work Share API.");
             this.logger?.error("POST /activities failed.", {
                 message: axios.isAxiosError(error) ? error.message : String(error),
@@ -267,6 +290,12 @@ export class ApiClient {
             });
         } catch (error) {
             if (axios.isAxiosError(error)) {
+                if (this.isIdentityRejected(error)) {
+                    this.markConnectionError(this.getIdentityRequiredMessage());
+                    this.logger?.error("POST /patches rejected: missing client identity.");
+                    return;
+                }
+
                 this.markConnectionError("Unable to send patches to Work Share API.");
                 console.error(`Failed to send patch: ${error.message}`);
                 this.logger?.error("POST /patches failed.", {

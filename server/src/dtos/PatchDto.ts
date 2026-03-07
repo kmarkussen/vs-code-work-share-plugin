@@ -1,4 +1,4 @@
-import { IsISO8601, IsString } from "class-validator";
+import { IsISO8601, IsString, Matches } from "class-validator";
 
 /**
  * Shared git patch payload used for early conflict detection between users.
@@ -10,6 +10,7 @@ export class PatchDto {
 
     /** Contributor display name. */
     @IsString()
+    @Matches(/\S/, { message: "userName must contain non-whitespace characters" })
     userName!: string;
 
     /** File path relative to repository root (stable across machines). */
