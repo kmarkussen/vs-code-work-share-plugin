@@ -229,37 +229,35 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
                 children.push(userItem);
             }
 
-            // Patches - show conflict-causing patches if available
-            const conflictPatches = element.conflictPatches;
-            if (conflictPatches && conflictPatches.length > 0) {
-                for (const patch of conflictPatches) {
-                    const patchItem = FileTreeItem.patch(
-                        patch,
-                        element.repositoryRemoteUrl,
-                        element.repositoryFilePath,
-                    );
-                    patchItem.parent = element;
-                    children.push(patchItem);
+            // Patches: render a merged list so remote conflicts never hide patch rows.
+            const mergedPatchMap = new Map<string, SharedPatch>();
+
+            for (const conflictPatch of element.conflictPatches ?? []) {
+                const key = `${conflictPatch.userName}:${conflictPatch.repositoryFilePath}:${conflictPatch.baseCommit}:${conflictPatch.patch}:${conflictPatch.committed ? "1" : "0"}`;
+                mergedPatchMap.set(key, conflictPatch);
+            }
+
+            for (const patch of element.patches ?? []) {
+                const normalizedPatch: SharedPatch = {
+                    repositoryRemoteUrl: patch.repositoryRemoteUrl,
+                    userName: patch.userName,
+                    repositoryFilePath: patch.repositoryFilePath,
+                    baseCommit: patch.baseCommit,
+                    patch: patch.patch,
+                    timestamp: new Date(patch.timestamp),
+                    committed: false,
+                };
+
+                const key = `${normalizedPatch.userName}:${normalizedPatch.repositoryFilePath}:${normalizedPatch.baseCommit}:${normalizedPatch.patch}:0`;
+                if (!mergedPatchMap.has(key)) {
+                    mergedPatchMap.set(key, normalizedPatch);
                 }
-            } else if (element.patches && element.patches.length > 0) {
-                // Fallback to regular patches if no conflicts
-                for (const patch of element.patches) {
-                    const patchItem = FileTreeItem.patch(
-                        {
-                            repositoryRemoteUrl: patch.repositoryRemoteUrl,
-                            userName: patch.userName,
-                            repositoryFilePath: patch.repositoryFilePath,
-                            baseCommit: patch.baseCommit,
-                            patch: patch.patch,
-                            timestamp: new Date(patch.timestamp),
-                            committed: false,
-                        },
-                        element.repositoryRemoteUrl,
-                        element.repositoryFilePath,
-                    );
-                    patchItem.parent = element;
-                    children.push(patchItem);
-                }
+            }
+
+            for (const patch of mergedPatchMap.values()) {
+                const patchItem = FileTreeItem.patch(patch, element.repositoryRemoteUrl, element.repositoryFilePath);
+                patchItem.parent = element;
+                children.push(patchItem);
             }
 
             return children.length > 0 ? children : [];

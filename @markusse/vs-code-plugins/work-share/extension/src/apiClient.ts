@@ -12,6 +12,12 @@ interface ConnectionIssue {
     message: string;
 }
 
+interface PatchSyncPayload {
+    repositoryRemoteUrl: string;
+    userName: string;
+    patches: SharedPatch[];
+}
+
 /**
  * Small API abstraction for sending and querying activity data.
  */
@@ -287,6 +293,63 @@ export class ApiClient {
                 });
                 return;
             }
+            throw error;
+        }
+    }
+
+    /**
+     * Synchronizes a user's active patch set for a repository, replacing stale server-side records.
+     */
+    public async syncRepositoryUserPatches(payload: PatchSyncPayload): Promise<void> {
+        if (!this.client) {
+            this.warnIfClientMissingOnce(
+                "syncRepositoryUserPatches",
+                "Skipping POST /patches/sync because API client is not configured.",
+            );
+            return;
+        }
+
+        this.logger?.info("POST /patches/sync", {
+            repositoryRemoteUrl: payload.repositoryRemoteUrl,
+            userName: payload.userName,
+            patchCount: payload.patches.length,
+        });
+
+        try {
+            await this.client.post("/patches/sync", {
+                repositoryRemoteUrl: payload.repositoryRemoteUrl,
+                userName: payload.userName,
+                patches: payload.patches.map((patch) => ({
+                    repositoryFilePath: patch.repositoryFilePath,
+                    baseCommit: patch.baseCommit,
+                    patch: patch.patch,
+                    timestamp: patch.timestamp.toISOString(),
+                })),
+            });
+
+            this.markConnectionHealthy();
+            this.logger?.info("POST /patches/sync succeeded.", {
+                repositoryRemoteUrl: payload.repositoryRemoteUrl,
+                userName: payload.userName,
+                patchCount: payload.patches.length,
+            });
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                if (this.isIdentityRejected(error)) {
+                    this.markConnectionError(this.getIdentityRequiredMessage());
+                    this.logger?.error("POST /patches/sync rejected: missing client identity.");
+                    return;
+                }
+
+                this.markConnectionError("Unable to synchronize patches with Work Share API.");
+                this.logger?.error("POST /patches/sync failed.", {
+                    message: error.message,
+                    repositoryRemoteUrl: payload.repositoryRemoteUrl,
+                    userName: payload.userName,
+                });
+                return;
+            }
+
             throw error;
         }
     }

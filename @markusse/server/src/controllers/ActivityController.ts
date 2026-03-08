@@ -20,6 +20,19 @@ interface StoredActivity extends ActivityDto {
     receivedAt: string;
 }
 
+interface PatchSyncItem {
+    repositoryFilePath: string;
+    baseCommit: string;
+    patch: string;
+    timestamp: string;
+}
+
+interface PatchSyncRequest {
+    repositoryRemoteUrl: string;
+    userName: string;
+    patches: PatchSyncItem[];
+}
+
 // Keep in-memory state at module scope so it persists even if controller instances are recreated per request.
 const activityStore: Map<string, StoredActivity[]> = new Map();
 const patchStore: Map<string, StoredPatch[]> = new Map();
@@ -282,6 +295,68 @@ export class ActivityController {
         const response: PostPatchesResponse = {
             success: true,
             message: "Patch stored",
+            timestamp: new Date().toISOString(),
+        };
+        return response;
+    }
+
+    /**
+     * Replaces all previously uploaded patches for a user/repository with the currently active patch list.
+     */
+    @Post("/patches/sync")
+    async synchronizePatches(@Body() body: PatchSyncRequest): Promise<PostPatchesResponse> {
+        if (!body?.repositoryRemoteUrl?.trim()) {
+            throw new BadRequestError("repositoryRemoteUrl is required.");
+        }
+
+        const normalizedUserName = normalizeAndValidateIdentity(body.userName);
+        const synchronizedPatches = Array.isArray(body.patches) ? body.patches : [];
+
+        let removedCount = 0;
+        for (const [fileKey, records] of patchStore.entries()) {
+            const retainedRecords = records.filter(
+                (record) =>
+                    !(
+                        record.repositoryRemoteUrl === body.repositoryRemoteUrl &&
+                        record.userName === normalizedUserName
+                    ),
+            );
+            removedCount += records.length - retainedRecords.length;
+
+            if (retainedRecords.length === 0) {
+                patchStore.delete(fileKey);
+            } else {
+                patchStore.set(fileKey, retainedRecords);
+            }
+        }
+
+        let createdCount = 0;
+        for (const patch of synchronizedPatches) {
+            if (!patch.repositoryFilePath?.trim() || !patch.baseCommit?.trim() || !patch.patch?.trim()) {
+                continue;
+            }
+
+            const key = `${body.repositoryRemoteUrl}:${patch.repositoryFilePath}`;
+            if (!patchStore.has(key)) {
+                patchStore.set(key, []);
+            }
+
+            patchStore.get(key)!.push({
+                repositoryRemoteUrl: body.repositoryRemoteUrl,
+                userName: normalizedUserName,
+                repositoryFilePath: patch.repositoryFilePath,
+                baseCommit: patch.baseCommit,
+                patch: patch.patch,
+                timestamp: patch.timestamp,
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                receivedAt: new Date().toISOString(),
+            });
+            createdCount += 1;
+        }
+
+        const response: PostPatchesResponse = {
+            success: true,
+            message: `Patches synchronized (removed ${removedCount}, created ${createdCount})`,
             timestamp: new Date().toISOString(),
         };
         return response;

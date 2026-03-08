@@ -130,4 +130,70 @@ suite("FileTreeDataProvider Test Suite", () => {
             ),
         );
     });
+
+    test("File node should keep patch rows visible when remote conflicts exist", async () => {
+        const apiClientStub = {
+            getConnectionIssue: () => undefined,
+            getFiles: async () => [
+                {
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    repositoryName: "repo",
+                    fileCount: 1,
+                    files: [
+                        {
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            repositoryFilePath: "src/example.ts",
+                            repositoryFileName: "example.ts",
+                            activeUsers: ["Alice"],
+                            patches: [
+                                {
+                                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                                    userName: "Bob",
+                                    repositoryFilePath: "src/example.ts",
+                                    baseCommit: "base1234",
+                                    patch: "diff --git a/src/example.ts b/src/example.ts\\n...",
+                                    timestamp: new Date("2026-03-08T12:00:00.000Z").toISOString(),
+                                },
+                            ],
+                            lastActivity: new Date("2026-03-08T12:00:00.000Z").toISOString(),
+                        },
+                    ],
+                },
+            ],
+            onDidChangeData: createMockEvent<void>(),
+        } as const;
+
+        const trackerStub = {
+            getProjectFileConflicts: (repositoryFilePath: string) => {
+                if (repositoryFilePath !== "src/example.ts") {
+                    return undefined;
+                }
+
+                return [
+                    {
+                        repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        userName: "origin/main",
+                        repositoryFilePath: "src/example.ts",
+                        baseCommit: "remote999",
+                        patch: "diff --git a/src/example.ts b/src/example.ts\\n...",
+                        timestamp: new Date("2026-03-08T12:01:00.000Z"),
+                        committed: true,
+                    },
+                ];
+            },
+            onDidChangeConflictStatus: createMockEvent<void>(),
+        };
+
+        const provider = new FileTreeDataProvider(apiClientStub as never, trackerStub as never);
+        const rootItems = await provider.getChildren();
+        const repositoryItem = rootItems.find((item) => item.kind === "repository");
+        assert.ok(repositoryItem, "Expected repository node");
+
+        const repositoryChildren = await provider.getChildren(repositoryItem);
+        assert.strictEqual(repositoryChildren.length, 1, "Expected one file node");
+
+        const fileChildren = await provider.getChildren(repositoryChildren[0]);
+        const patchRows = fileChildren.filter((item) => item.kind === "patch");
+        assert.strictEqual(patchRows.length, 2, "Expected both remote conflict and patch rows to be visible");
+    });
 });

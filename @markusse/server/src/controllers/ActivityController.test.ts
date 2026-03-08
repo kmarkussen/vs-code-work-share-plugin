@@ -363,6 +363,83 @@ describe("ActivityController", () => {
         });
     });
 
+    describe("POST /patches/sync", () => {
+        it("should replace existing patches for user and repository", async () => {
+            const stalePatch: PatchDto = {
+                repositoryRemoteUrl: "https://github.com/org/repo.git",
+                userName: "Alice",
+                repositoryFilePath: "src/stale.ts",
+                baseCommit: "old123",
+                patch: "diff --git a/src/stale.ts b/src/stale.ts\n...",
+                timestamp: new Date(Date.now() - 1000).toISOString(),
+            };
+
+            await request(app).post("/patches").send(stalePatch).expect(200);
+
+            await request(app)
+                .post("/patches/sync")
+                .send({
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    userName: "Alice",
+                    patches: [
+                        {
+                            repositoryFilePath: "src/current.ts",
+                            baseCommit: "new123",
+                            patch: "diff --git a/src/current.ts b/src/current.ts\n...",
+                            timestamp: new Date().toISOString(),
+                        },
+                    ],
+                })
+                .expect(200);
+
+            const patchesResponse = await request(app)
+                .get("/patches")
+                .query({ repositoryRemoteUrl: "https://github.com/org/repo.git", userName: "Alice" })
+                .expect(200);
+
+            expect(patchesResponse.body.count).toBe(1);
+            expect(patchesResponse.body.patches[0].repositoryFilePath).toBe("src/current.ts");
+        });
+
+        it("should only replace patches for matching user and repository", async () => {
+            const alicePatch: PatchDto = {
+                repositoryRemoteUrl: "https://github.com/org/repo.git",
+                userName: "Alice",
+                repositoryFilePath: "src/alice.ts",
+                baseCommit: "abc123",
+                patch: "diff --git a/src/alice.ts b/src/alice.ts\n...",
+                timestamp: new Date().toISOString(),
+            };
+            const bobPatch: PatchDto = {
+                repositoryRemoteUrl: "https://github.com/org/repo.git",
+                userName: "Bob",
+                repositoryFilePath: "src/bob.ts",
+                baseCommit: "def456",
+                patch: "diff --git a/src/bob.ts b/src/bob.ts\n...",
+                timestamp: new Date().toISOString(),
+            };
+
+            await request(app).post("/patches").send(alicePatch).expect(200);
+            await request(app).post("/patches").send(bobPatch).expect(200);
+
+            await request(app)
+                .post("/patches/sync")
+                .send({
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    userName: "Alice",
+                    patches: [],
+                })
+                .expect(200);
+
+            const allPatches = await request(app).get("/patches").expect(200);
+            const alicePatches = allPatches.body.patches.filter((patch: StoredPatch) => patch.userName === "Alice");
+            const bobPatches = allPatches.body.patches.filter((patch: StoredPatch) => patch.userName === "Bob");
+
+            expect(alicePatches).toHaveLength(0);
+            expect(bobPatches).toHaveLength(1);
+        });
+    });
+
     describe("GET /files", () => {
         beforeEach(async () => {
             // Seed activities to create active files

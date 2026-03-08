@@ -28,6 +28,9 @@ export class FileActivityTracker {
     private gitContext: GitContextService;
     private identityService: UserIdentityService;
     private patchSharingService: PatchSharingService;
+    private mergeViewTempDirectories: Set<string> = new Set();
+    private patchSyncInFlightByRepository: Set<string> = new Set();
+    private lastPatchSyncAtByRepositoryRemoteUrl: Map<string, number> = new Map();
 
     /**
      * Master list of conflicts for project files.
@@ -180,10 +183,94 @@ export class FileActivityTracker {
     }
 
     /**
+     * Merges patch-based and remote committed conflict sources into a single deterministic list.
+     */
+    private mergeConflictSources(
+        patchConflicts: SharedPatch[],
+        existingConflicts?: SharedPatch[],
+        remoteConflictPatch?: SharedPatch,
+    ): SharedPatch[] {
+        const remoteConflicts = (existingConflicts ?? []).filter((patch) => patch.committed);
+        if (remoteConflictPatch) {
+            remoteConflicts.push(remoteConflictPatch);
+        }
+
+        const allConflicts = [...patchConflicts, ...remoteConflicts];
+        const dedupedConflicts = new Map<string, SharedPatch>();
+
+        for (const patch of allConflicts) {
+            const dedupeKey = `${patch.userName}:${patch.repositoryFilePath}:${patch.baseCommit}:${patch.committed ? "1" : "0"}`;
+            if (!dedupedConflicts.has(dedupeKey)) {
+                dedupedConflicts.set(dedupeKey, patch);
+            }
+        }
+
+        return Array.from(dedupedConflicts.values());
+    }
+
+    /**
+     * Replaces the current user's server-side patch set for a repository with active local patches.
+     */
+    private async synchronizeRepositoryPatches(filePath?: string, force = false): Promise<void> {
+        const syncIntervalMs = 15000;
+        const repositoryRemoteUrl =
+            (filePath ? await this.gitContext.getRepositoryRemoteUrl(filePath) : undefined) ??
+            (await this.getCurrentRepositoryRemoteUrl());
+
+        if (!repositoryRemoteUrl) {
+            return;
+        }
+
+        const userName = await this.identityService.resolveIdentifiedUserName(filePath);
+        if (!userName) {
+            return;
+        }
+
+        if (this.patchSyncInFlightByRepository.has(repositoryRemoteUrl)) {
+            return;
+        }
+
+        const now = Date.now();
+        const lastSyncAt = this.lastPatchSyncAtByRepositoryRemoteUrl.get(repositoryRemoteUrl) ?? 0;
+        if (!force && now - lastSyncAt < syncIntervalMs) {
+            return;
+        }
+
+        this.patchSyncInFlightByRepository.add(repositoryRemoteUrl);
+        try {
+            const activePatches = await this.patchSharingService.buildActivePatchesForRepository(
+                repositoryRemoteUrl,
+                userName,
+            );
+
+            await this.apiClient.syncRepositoryUserPatches({
+                repositoryRemoteUrl,
+                userName,
+                patches: activePatches,
+            });
+
+            this.lastPatchSyncAtByRepositoryRemoteUrl.set(repositoryRemoteUrl, now);
+            this.logger?.info("Patch sync completed for repository.", {
+                repositoryRemoteUrl,
+                userName,
+                synchronizedPatchCount: activePatches.length,
+            });
+        } catch (error) {
+            this.logger?.warn("Patch sync failed for repository.", {
+                repositoryRemoteUrl,
+                message: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            this.patchSyncInFlightByRepository.delete(repositoryRemoteUrl);
+        }
+    }
+
+    /**
      * Opens a conflict in VS Code's merge editor so users can resolve it with built-in merge tooling.
      */
     public async openConflictInMergeEditor(conflictPatch: SharedPatch, repositoryRemoteUrl?: string): Promise<void> {
         await this.gitContext.initialize();
+        await this.pruneStaleMergeViewTempDirectories();
 
         const repository =
             (conflictPatch.repositoryRemoteUrl ?
@@ -239,6 +326,7 @@ export class FileActivityTracker {
         }
 
         const mergeDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "work-share-merge-view-"));
+        this.mergeViewTempDirectories.add(mergeDirectory);
         const baseFilePath = path.join(mergeDirectory, "base");
         const incomingFilePath = path.join(mergeDirectory, "incoming");
         await fs.writeFile(baseFilePath, baseContent, "utf8");
@@ -258,6 +346,63 @@ export class FileActivityTracker {
             },
             output: vscode.Uri.file(localFilePath),
         });
+    }
+
+    /**
+     * Prunes stale merge-view temp directories to avoid unbounded temp resource growth.
+     */
+    private async pruneStaleMergeViewTempDirectories(): Promise<void> {
+        const tempRoot = os.tmpdir();
+        const directoryPrefix = "work-share-merge-view-";
+        const maxAgeMs = 2 * 60 * 60 * 1000;
+        const now = Date.now();
+
+        let entries: string[] = [];
+        try {
+            entries = await fs.readdir(tempRoot);
+        } catch {
+            return;
+        }
+
+        const candidateDirectories = entries
+            .filter((entry) => entry.startsWith(directoryPrefix))
+            .map((entry) => path.join(tempRoot, entry));
+
+        for (const directoryPath of candidateDirectories) {
+            try {
+                const stat = await fs.stat(directoryPath);
+                if (!stat.isDirectory()) {
+                    continue;
+                }
+
+                if (now - stat.mtimeMs <= maxAgeMs) {
+                    continue;
+                }
+
+                await fs.rm(directoryPath, { recursive: true, force: true });
+                this.mergeViewTempDirectories.delete(directoryPath);
+            } catch {
+                // Ignore prune failures for files that are in use or already removed.
+            }
+        }
+    }
+
+    /**
+     * Disposes merge-view temp directories tracked for this extension session.
+     */
+    private disposeMergeViewTempDirectories(): void {
+        const directoriesToDispose = Array.from(this.mergeViewTempDirectories.values());
+        this.mergeViewTempDirectories.clear();
+
+        void Promise.allSettled(
+            directoriesToDispose.map(async (directoryPath) => {
+                try {
+                    await fs.rm(directoryPath, { recursive: true, force: true });
+                } catch {
+                    // Ignore cleanup failures during shutdown.
+                }
+            }),
+        );
     }
 
     /**
@@ -703,14 +848,9 @@ export class FileActivityTracker {
                 { forceRefresh },
             );
 
-            // Update master list: replace remote conflicts while preserving patch conflicts
-            let currentConflicts = previousConflicts ?? [];
-            // Remove old remote conflicts (committed: true)
-            currentConflicts = currentConflicts.filter((patch) => !patch.committed);
-            // Add new remote conflict if detected
-            if (remoteConflictPatch) {
-                currentConflicts.push(remoteConflictPatch);
-            }
+            // Update master list: keep patch conflicts and refresh only remote committed conflicts.
+            const patchConflicts = (previousConflicts ?? []).filter((patch) => !patch.committed);
+            const currentConflicts = this.mergeConflictSources(patchConflicts, undefined, remoteConflictPatch);
             this.projectFileConflicts.set(repositoryFilePath, currentConflicts);
 
             const currentStatus = currentConflicts.length > 0 ? "conflict" : "clean";
@@ -847,9 +987,12 @@ export class FileActivityTracker {
         const statuses = new Map<string, ConflictStatus>();
 
         for (const filePath of repositoryRelativeFilePaths) {
-            const conflicts = await this.evaluatePatchConflictsForFile(repositoryRemoteUrl, filePath);
-            this.projectFileConflicts.set(filePath, conflicts);
-            statuses.set(filePath, conflicts.length > 0 ? "conflict" : "clean");
+            const patchConflicts = await this.evaluatePatchConflictsForFile(repositoryRemoteUrl, filePath);
+            const existingConflicts = this.projectFileConflicts.get(filePath);
+            const mergedConflicts = this.mergeConflictSources(patchConflicts, existingConflicts);
+
+            this.projectFileConflicts.set(filePath, mergedConflicts);
+            statuses.set(filePath, mergedConflicts.length > 0 ? "conflict" : "clean");
         }
 
         return statuses;
@@ -892,15 +1035,15 @@ export class FileActivityTracker {
             repositoryFilePath,
             { forceRefresh: true },
         );
-        if (remoteConflictPatch) {
-            patchConflicts.push(remoteConflictPatch);
-        }
+
+        const existingConflicts = this.projectFileConflicts.get(repositoryFilePath);
+        const allConflicts = this.mergeConflictSources(patchConflicts, existingConflicts, remoteConflictPatch);
 
         // Update master list
-        this.projectFileConflicts.set(repositoryFilePath, patchConflicts);
+        this.projectFileConflicts.set(repositoryFilePath, allConflicts);
         this._onDidChangeConflictStatus.fire();
 
-        return patchConflicts.length > 0 ? "conflict" : "clean";
+        return allConflicts.length > 0 ? "conflict" : "clean";
     }
 
     /**
@@ -1005,6 +1148,7 @@ export class FileActivityTracker {
         this.disposables.push(
             vscode.workspace.onDidSaveTextDocument((document) => {
                 void this.patchSharingService.sharePatchForFile(document.uri.fsPath);
+                void this.synchronizeRepositoryPatches(document.uri.fsPath, true);
                 void this.autoCheckConflictsOnSave(document.uri.fsPath);
             }),
         );
@@ -1019,6 +1163,7 @@ export class FileActivityTracker {
         // Start periodic update timer
         this.startUpdateTimer();
         this.startRemoteConflictTimer();
+        void this.synchronizeRepositoryPatches(undefined, true);
         void this.refreshActiveFileRemoteConflicts(true);
     }
 
@@ -1038,6 +1183,15 @@ export class FileActivityTracker {
             clearInterval(this.remoteConflictTimer);
             this.remoteConflictTimer = undefined;
         }
+
+        this.disposeMergeViewTempDirectories();
+        this.activities.clear();
+        this.projectFileConflicts.clear();
+        this.patchSyncInFlightByRepository.clear();
+        this.lastPatchSyncAtByRepositoryRemoteUrl.clear();
+        this.lastRemoteFetchAtByRepositoryRoot.clear();
+        this.lastDetachedHeadWarningAtByRepositoryRoot.clear();
+        this.remoteConflictAvailabilityIssueByRepositoryRoot.clear();
     }
 
     private startUpdateTimer() {

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { createHash } from "crypto";
+import { SharedPatch } from "../sharedPatch";
 import { ApiClient } from "../apiClient";
 import { OutputLogger } from "../outputLogger";
 import { isGitInternalPath } from "./pathUtils";
@@ -18,6 +19,85 @@ export class PatchSharingService {
         private apiClient: ApiClient,
         private logger?: OutputLogger,
     ) {}
+
+    /**
+     * Builds the complete set of active unstaged patches for a repository and user.
+     */
+    public async buildActivePatchesForRepository(
+        repositoryRemoteUrl: string,
+        userName: string,
+    ): Promise<SharedPatch[]> {
+        const repository = await this.gitContext.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
+        if (!repository) {
+            this.logger?.warn("Patch sync skipped: repository not found for remote URL.", {
+                repositoryRemoteUrl,
+            });
+            return [];
+        }
+
+        const repositoryRootPath = repository.rootUri.fsPath;
+        const baseCommitResult = await this.gitContext.runGitCommand(repositoryRootPath, ["rev-parse", "HEAD"]);
+        if (baseCommitResult.exitCode !== 0) {
+            this.logger?.warn("Patch sync skipped: could not resolve base commit.", {
+                repositoryRemoteUrl,
+                stderr: baseCommitResult.stderr,
+            });
+            return [];
+        }
+
+        const baseCommit = baseCommitResult.stdout.trim();
+        const changedFilesResult = await this.gitContext.runGitCommand(repositoryRootPath, ["diff", "--name-only"]);
+        if (changedFilesResult.exitCode !== 0) {
+            this.logger?.warn("Patch sync skipped: could not list changed files.", {
+                repositoryRemoteUrl,
+                stderr: changedFilesResult.stderr,
+            });
+            return [];
+        }
+
+        const repositoryFilePaths = changedFilesResult.stdout
+            .split(/\r?\n/)
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0);
+
+        const activePatches: SharedPatch[] = [];
+        for (const repositoryFilePath of repositoryFilePaths) {
+            const patchResult = await this.gitContext.runGitCommand(repositoryRootPath, [
+                "diff",
+                "--",
+                repositoryFilePath,
+            ]);
+
+            if (patchResult.exitCode !== 0 || !patchResult.stdout.trim()) {
+                continue;
+            }
+
+            activePatches.push({
+                repositoryRemoteUrl,
+                userName,
+                repositoryFilePath,
+                baseCommit,
+                patch: patchResult.stdout,
+                timestamp: new Date(),
+            });
+
+            const absoluteFilePath = `${repositoryRootPath}/${repositoryFilePath}`.replace(/\\/g, "/");
+            const patchDigest = createHash("sha256")
+                .update(baseCommit)
+                .update("\n")
+                .update(patchResult.stdout)
+                .digest("hex");
+            this.lastSharedPatchDigestByFile.set(absoluteFilePath, patchDigest);
+        }
+
+        this.logger?.info("Patch sync active set built.", {
+            repositoryRemoteUrl,
+            userName,
+            activePatchCount: activePatches.length,
+        });
+
+        return activePatches;
+    }
 
     /**
      * Generates and shares a repository-relative patch for a saved file.
