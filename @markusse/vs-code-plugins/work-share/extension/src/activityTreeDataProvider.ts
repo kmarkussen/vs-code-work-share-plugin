@@ -13,6 +13,11 @@ interface DirectoryTree {
     files: Map<string, FileActivity[]>;
 }
 
+interface FileConflictPresentation {
+    status: ConflictStatus;
+    tooltip: string;
+}
+
 type TreeItemKind =
     | "repository"
     | "user"
@@ -114,6 +119,56 @@ export class ActivityTreeDataProvider implements vscode.TreeDataProvider<WorkSha
             repositoryRemoteUrl,
             uniqueRepositoryFiles,
         );
+    }
+
+    /**
+     * Computes the combined conflict presentation for a tree file node.
+     */
+    private getFileConflictPresentation(
+        repositoryRemoteUrl: string | undefined,
+        repositoryFilePath: string,
+        fileName: string,
+        activityCount: number,
+    ): FileConflictPresentation {
+        const patchStatus = this.conflictStatusesByRepositoryFilePath.get(repositoryFilePath) ?? "unknown";
+        const remoteStatus = this.tracker.getKnownRemoteConflictStatus(repositoryRemoteUrl, repositoryFilePath);
+        const status =
+            patchStatus === "conflict" || remoteStatus === "conflict" ? "conflict"
+            : patchStatus === "clean" && (remoteStatus === "clean" || remoteStatus === undefined) ? "clean"
+            : "unknown";
+
+        if (patchStatus === "conflict" && remoteStatus === "conflict") {
+            return {
+                status,
+                tooltip: `${fileName} has possible merge conflicts from shared patches and remote tracking branch updates.`,
+            };
+        }
+
+        if (patchStatus === "conflict") {
+            return {
+                status,
+                tooltip: `${fileName} has possible incoming merge conflicts from shared patches.`,
+            };
+        }
+
+        if (remoteStatus === "conflict") {
+            return {
+                status,
+                tooltip: `${fileName} has possible merge conflicts from remote tracking branch updates.`,
+            };
+        }
+
+        if (remoteStatus === "unknown") {
+            return {
+                status,
+                tooltip: `${fileName} has ${activityCount} tracked events. Remote tracking conflict status is unavailable.`,
+            };
+        }
+
+        return {
+            status,
+            tooltip: `${fileName} has ${activityCount} tracked events.`,
+        };
     }
 
     /**
@@ -297,11 +352,13 @@ export class ActivityTreeDataProvider implements vscode.TreeDataProvider<WorkSha
                 .sort(([left], [right]) => left.localeCompare(right))
                 .map(([fileName, fileActivities]) => {
                     const repositoryFilePath = this.getRelativeFilePath(fileActivities[0].filePath);
-                    const fileItem = WorkShareTreeItem.file(
+                    const conflictPresentation = this.getFileConflictPresentation(
+                        fileActivities[0].repositoryRemoteUrl,
+                        repositoryFilePath,
                         fileName,
-                        fileActivities,
-                        this.conflictStatusesByRepositoryFilePath.get(repositoryFilePath) ?? "unknown",
+                        fileActivities.length,
                     );
+                    const fileItem = WorkShareTreeItem.file(fileName, fileActivities, conflictPresentation);
                     // Cache file item for reveal()
                     this.fileItemsByRelativePath.set(repositoryFilePath, fileItem);
                     return fileItem;
@@ -331,11 +388,13 @@ export class ActivityTreeDataProvider implements vscode.TreeDataProvider<WorkSha
                 .sort(([left], [right]) => left.localeCompare(right))
                 .map(([fileName, fileActivities]) => {
                     const repositoryFilePath = this.getRelativeFilePath(fileActivities[0].filePath);
-                    const fileItem = WorkShareTreeItem.file(
+                    const conflictPresentation = this.getFileConflictPresentation(
+                        fileActivities[0].repositoryRemoteUrl,
+                        repositoryFilePath,
                         fileName,
-                        fileActivities,
-                        this.conflictStatusesByRepositoryFilePath.get(repositoryFilePath) ?? "unknown",
+                        fileActivities.length,
                     );
+                    const fileItem = WorkShareTreeItem.file(fileName, fileActivities, conflictPresentation);
                     // Cache file item for reveal()
                     this.fileItemsByRelativePath.set(repositoryFilePath, fileItem);
                     return fileItem;
@@ -429,7 +488,11 @@ class WorkShareTreeItem extends vscode.TreeItem {
         return item;
     }
 
-    static file(fileName: string, activities: FileActivity[], conflictStatus: ConflictStatus): WorkShareTreeItem {
+    static file(
+        fileName: string,
+        activities: FileActivity[],
+        conflictPresentation: FileConflictPresentation,
+    ): WorkShareTreeItem {
         const item = new WorkShareTreeItem(
             "file",
             fileName,
@@ -437,12 +500,9 @@ class WorkShareTreeItem extends vscode.TreeItem {
             undefined,
             activities,
         );
-        item.iconPath = new vscode.ThemeIcon(conflictStatus === "conflict" ? "warning" : "file");
+        item.iconPath = new vscode.ThemeIcon(conflictPresentation.status === "conflict" ? "warning" : "file");
         item.description = `${activities.length} events`;
-        item.tooltip =
-            conflictStatus === "conflict" ?
-                `${fileName} has possible incoming merge conflicts from shared patches.`
-            :   `${fileName} has ${activities.length} tracked events.`;
+        item.tooltip = conflictPresentation.tooltip;
         return item;
     }
 

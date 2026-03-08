@@ -21,8 +21,11 @@ export class FileActivityTracker {
     private disposables: vscode.Disposable[] = [];
     private activities: Map<string, FileActivity> = new Map();
     private updateTimer: NodeJS.Timeout | undefined;
+    private remoteConflictTimer: NodeJS.Timeout | undefined;
     private lastActiveEditorFilePath: string | undefined;
     private lastActiveEditorChangeAt = 0;
+    private lastRemoteFetchAtByRepositoryRoot = new Map<string, number>();
+    private lastRemoteConflictStatusByRepositoryFile = new Map<string, ConflictStatus>();
     private gitContext: GitContextService;
     private identityService: UserIdentityService;
     private patchSharingService: PatchSharingService;
@@ -116,7 +119,241 @@ export class FileActivityTracker {
         this.logger?.info("Auto conflict check on save completed.", { filePath, status });
 
         if (status === "conflict") {
-            vscode.window.showWarningMessage("Work Share: Possible merge conflict detected for saved file.");
+            vscode.window.showWarningMessage(
+                "Work Share: Possible incoming or remote-tracking merge conflict detected for saved file.",
+            );
+        }
+    }
+
+    /**
+     * Returns the configured interval used for remote tracking conflict checks.
+     * A non-positive value disables the background timer.
+     */
+    private getRemoteConflictCheckInterval(): number {
+        const config = vscode.workspace.getConfiguration("workShare");
+        return config.get<number>("remoteConflictCheckInterval", 60000);
+    }
+
+    /**
+     * Combines multiple conflict signals into a single user-facing status.
+     */
+    private combineConflictStatuses(...statuses: ConflictStatus[]): ConflictStatus {
+        if (statuses.includes("conflict")) {
+            return "conflict";
+        }
+
+        if (statuses.every((status) => status === "clean")) {
+            return "clean";
+        }
+
+        return "unknown";
+    }
+
+    /**
+     * Builds a stable cache key for repository-scoped file conflict state.
+     */
+    private getRepositoryFileConflictKey(
+        repositoryRemoteUrl: string | undefined,
+        repositoryFilePath: string | undefined,
+    ): string | undefined {
+        if (!repositoryRemoteUrl || !repositoryFilePath) {
+            return undefined;
+        }
+
+        return `${repositoryRemoteUrl}::${repositoryFilePath}`;
+    }
+
+    /**
+     * Returns the most recently known remote-tracking conflict status for a repository-relative file.
+     */
+    public getKnownRemoteConflictStatus(
+        repositoryRemoteUrl: string | undefined,
+        repositoryFilePath: string | undefined,
+    ): ConflictStatus | undefined {
+        const key = this.getRepositoryFileConflictKey(repositoryRemoteUrl, repositoryFilePath);
+        return key ? this.lastRemoteConflictStatusByRepositoryFile.get(key) : undefined;
+    }
+
+    /**
+     * Fetches the tracking remote for a repository, with interval-based throttling for background checks.
+     */
+    private async refreshTrackingBranchState(
+        repositoryRootPath: string,
+        upstreamRef: string,
+        forceRefresh: boolean,
+    ): Promise<boolean> {
+        const remoteConflictInterval = this.getRemoteConflictCheckInterval();
+        const remoteName = upstreamRef.split("/")[0];
+        if (!remoteName) {
+            return false;
+        }
+
+        const now = Date.now();
+        const lastFetchAt = this.lastRemoteFetchAtByRepositoryRoot.get(repositoryRootPath) ?? 0;
+        if (!forceRefresh && remoteConflictInterval > 0 && now - lastFetchAt < remoteConflictInterval) {
+            return true;
+        }
+
+        const fetchResult = await this.gitContext.runGitCommand(repositoryRootPath, ["fetch", "--quiet", remoteName]);
+        if (fetchResult.exitCode !== 0) {
+            this.logger?.warn("Remote conflict check: fetch failed.", {
+                repositoryRootPath,
+                remoteName,
+                stderr: fetchResult.stderr,
+            });
+            return false;
+        }
+
+        this.lastRemoteFetchAtByRepositoryRoot.set(repositoryRootPath, now);
+        return true;
+    }
+
+    /**
+     * Evaluates whether remote tracking branch changes may conflict with the local current file state.
+     */
+    private async checkRemoteTrackingConflictStatusForFile(
+        filePath: string,
+        options?: { forceRefresh?: boolean },
+    ): Promise<ConflictStatus> {
+        await this.gitContext.initialize();
+        const repository = this.gitContext.resolveRepositoryForFile(filePath);
+        const repositoryFilePath = this.gitContext.getRepositoryRelativeFilePath(filePath);
+        if (!repository || !repositoryFilePath) {
+            return "unknown";
+        }
+
+        const upstreamRefResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{u}",
+        ]);
+        if (upstreamRefResult.exitCode !== 0) {
+            this.logger?.info("Remote conflict check skipped: repository has no upstream tracking branch.", {
+                filePath,
+                stderr: upstreamRefResult.stderr,
+            });
+            return "unknown";
+        }
+
+        const upstreamRef = upstreamRefResult.stdout.trim();
+        if (!upstreamRef) {
+            return "unknown";
+        }
+
+        const fetched = await this.refreshTrackingBranchState(
+            repository.rootUri.fsPath,
+            upstreamRef,
+            options?.forceRefresh ?? false,
+        );
+        if (!fetched) {
+            return "unknown";
+        }
+
+        const mergeBaseResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+            "merge-base",
+            "HEAD",
+            upstreamRef,
+        ]);
+        if (mergeBaseResult.exitCode !== 0) {
+            this.logger?.warn("Remote conflict check: failed to resolve merge base.", {
+                filePath,
+                upstreamRef,
+                stderr: mergeBaseResult.stderr,
+            });
+            return "unknown";
+        }
+
+        const mergeBase = mergeBaseResult.stdout.trim();
+        if (!mergeBase) {
+            return "unknown";
+        }
+
+        const diffResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+            "diff",
+            "--binary",
+            "--full-index",
+            `${mergeBase}..${upstreamRef}`,
+            "--",
+            repositoryFilePath,
+        ]);
+        if (diffResult.exitCode !== 0) {
+            this.logger?.warn("Remote conflict check: failed to diff tracking branch.", {
+                filePath,
+                repositoryFilePath,
+                upstreamRef,
+                stderr: diffResult.stderr,
+            });
+            return "unknown";
+        }
+
+        if (!diffResult.stdout.trim()) {
+            return "clean";
+        }
+
+        const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "work-share-remote-"));
+        const patchFilePath = path.join(tempDirectory, "tracking-branch.patch");
+
+        try {
+            await fs.writeFile(patchFilePath, diffResult.stdout, "utf8");
+
+            const applyCheckResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+                "apply",
+                "--3way",
+                "--check",
+                patchFilePath,
+            ]);
+
+            this.logger?.info("Remote conflict check completed for active file.", {
+                filePath,
+                repositoryFilePath,
+                upstreamRef,
+                conflictDetected: applyCheckResult.exitCode !== 0,
+                stderr: applyCheckResult.stderr,
+            });
+
+            return applyCheckResult.exitCode !== 0 ? "conflict" : "clean";
+        } finally {
+            await fs.rm(tempDirectory, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Periodically refreshes remote conflict status for the active editor file and surfaces new conflicts.
+     */
+    private async refreshActiveFileRemoteConflicts(forceRefresh: boolean): Promise<void> {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor) {
+            return;
+        }
+
+        const filePath = activeEditor.document.uri.fsPath;
+        if (!vscode.workspace.getWorkspaceFolder(activeEditor.document.uri) || isGitInternalPath(filePath)) {
+            return;
+        }
+
+        const repositoryRemoteUrl = await this.gitContext.getRepositoryRemoteUrl(filePath);
+        const repositoryFilePath = this.gitContext.getRepositoryRelativeFilePath(filePath);
+
+        const status = await this.checkRemoteTrackingConflictStatusForFile(filePath, { forceRefresh });
+        const conflictKey = this.getRepositoryFileConflictKey(repositoryRemoteUrl, repositoryFilePath);
+        const previousStatus = conflictKey ? this.lastRemoteConflictStatusByRepositoryFile.get(conflictKey) : undefined;
+        if (conflictKey) {
+            this.lastRemoteConflictStatusByRepositoryFile.set(conflictKey, status);
+        }
+
+        this.logger?.info("Background remote conflict status refreshed.", {
+            filePath,
+            repositoryFilePath,
+            repositoryRemoteUrl,
+            status,
+            forceRefresh,
+        });
+
+        if (status === "conflict" && previousStatus !== "conflict") {
+            void vscode.window.showWarningMessage(
+                "Work Share: Remote tracking branch has changes that may conflict with the active file.",
+            );
         }
     }
 
@@ -244,7 +481,12 @@ export class FileActivityTracker {
         }
 
         const statuses = await this.getConflictStatusesForFiles(repositoryRemoteUrl, [repositoryFilePath]);
-        return statuses.get(repositoryFilePath) ?? "unknown";
+        const patchConflictStatus = statuses.get(repositoryFilePath) ?? "unknown";
+        const remoteConflictStatus = await this.checkRemoteTrackingConflictStatusForFile(filePath, {
+            forceRefresh: true,
+        });
+
+        return this.combineConflictStatuses(patchConflictStatus, remoteConflictStatus);
     }
 
     /**
@@ -334,6 +576,7 @@ export class FileActivityTracker {
                 this.lastActiveEditorChangeAt = Date.now();
                 if (editor) {
                     void this.trackActivity(editor.document.uri.fsPath, "open");
+                    void this.refreshActiveFileRemoteConflicts(true);
                 }
             }),
         );
@@ -365,6 +608,8 @@ export class FileActivityTracker {
 
         // Start periodic update timer
         this.startUpdateTimer();
+        this.startRemoteConflictTimer();
+        void this.refreshActiveFileRemoteConflicts(true);
     }
 
     /**
@@ -378,6 +623,11 @@ export class FileActivityTracker {
             clearInterval(this.updateTimer);
             this.updateTimer = undefined;
         }
+
+        if (this.remoteConflictTimer) {
+            clearInterval(this.remoteConflictTimer);
+            this.remoteConflictTimer = undefined;
+        }
     }
 
     private startUpdateTimer() {
@@ -390,6 +640,25 @@ export class FileActivityTracker {
 
         this.updateTimer = setInterval(() => {
             void this.sendActivitiesToServer();
+        }, interval);
+    }
+
+    /**
+     * Starts the background timer that refreshes the active file against the remote tracking branch.
+     */
+    private startRemoteConflictTimer() {
+        const interval = this.getRemoteConflictCheckInterval();
+        if (interval <= 0) {
+            this.logger?.info("Remote conflict tracking timer disabled by configuration.", { interval });
+            return;
+        }
+
+        if (this.remoteConflictTimer) {
+            clearInterval(this.remoteConflictTimer);
+        }
+
+        this.remoteConflictTimer = setInterval(() => {
+            void this.refreshActiveFileRemoteConflicts(false);
         }, interval);
     }
 

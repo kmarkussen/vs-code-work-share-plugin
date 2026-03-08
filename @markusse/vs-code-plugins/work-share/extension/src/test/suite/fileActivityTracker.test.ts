@@ -87,6 +87,56 @@ suite("FileActivityTracker Test Suite", () => {
         assert.ok(remoteUrl === undefined || typeof remoteUrl === "string");
     });
 
+    test("checkConflictStatusForFile should report conflict when remote tracking branch conflicts", async () => {
+        const trackerInternals = tracker as unknown as {
+            gitContext: {
+                getRepositoryRemoteUrl(filePath: string): Promise<string | undefined>;
+                getRepositoryRelativeFilePath(filePath: string): string | undefined;
+            };
+            getConflictStatusesForFiles(
+                repositoryRemoteUrl: string | undefined,
+                repositoryRelativeFilePaths: string[],
+            ): Promise<Map<string, "clean" | "conflict" | "unknown">>;
+            checkRemoteTrackingConflictStatusForFile(
+                filePath: string,
+                options?: { forceRefresh?: boolean },
+            ): Promise<"clean" | "conflict" | "unknown">;
+        };
+
+        trackerInternals.gitContext.getRepositoryRemoteUrl = async () => "https://github.com/org/repo.git";
+        trackerInternals.gitContext.getRepositoryRelativeFilePath = () => "src/example.ts";
+        trackerInternals.getConflictStatusesForFiles = async () => new Map([["src/example.ts", "clean"]]);
+        trackerInternals.checkRemoteTrackingConflictStatusForFile = async () => "conflict";
+
+        const status = await tracker.checkConflictStatusForFile("/repo/src/example.ts");
+        assert.strictEqual(status, "conflict");
+    });
+
+    test("checkConflictStatusForFile should stay clean when both patch and remote checks are clean", async () => {
+        const trackerInternals = tracker as unknown as {
+            gitContext: {
+                getRepositoryRemoteUrl(filePath: string): Promise<string | undefined>;
+                getRepositoryRelativeFilePath(filePath: string): string | undefined;
+            };
+            getConflictStatusesForFiles(
+                repositoryRemoteUrl: string | undefined,
+                repositoryRelativeFilePaths: string[],
+            ): Promise<Map<string, "clean" | "conflict" | "unknown">>;
+            checkRemoteTrackingConflictStatusForFile(
+                filePath: string,
+                options?: { forceRefresh?: boolean },
+            ): Promise<"clean" | "conflict" | "unknown">;
+        };
+
+        trackerInternals.gitContext.getRepositoryRemoteUrl = async () => "https://github.com/org/repo.git";
+        trackerInternals.gitContext.getRepositoryRelativeFilePath = () => "src/example.ts";
+        trackerInternals.getConflictStatusesForFiles = async () => new Map([["src/example.ts", "clean"]]);
+        trackerInternals.checkRemoteTrackingConflictStatusForFile = async () => "clean";
+
+        const status = await tracker.checkConflictStatusForFile("/repo/src/example.ts");
+        assert.strictEqual(status, "clean");
+    });
+
     test("isGitInternalPath should detect .git directory files", () => {
         assert.strictEqual(isGitInternalPath("/repo/.git/config"), true);
         assert.strictEqual(isGitInternalPath("/repo/.git/index"), true);

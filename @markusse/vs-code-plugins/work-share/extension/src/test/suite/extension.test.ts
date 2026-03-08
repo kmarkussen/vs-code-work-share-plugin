@@ -39,6 +39,7 @@ suite("Extension Test Suite", () => {
         assert.strictEqual(config.get("enabled"), true);
         assert.strictEqual(config.get("updateInterval"), 5000);
         assert.strictEqual(config.get("apiServerUrl"), "");
+        assert.strictEqual(config.get("remoteConflictCheckInterval"), 60000);
     });
 
     test("Toggle tracking command should change enabled state", async () => {

@@ -92,6 +92,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically check for incoming patch conflicts whenever a file is saved"
+        },
+        "workShare.remoteConflictCheckInterval": {
+          "type": "number",
+          "default": 60000,
+          "description": "Interval (in milliseconds) for fetching the remote tracking branch and checking the active file for possible merge conflicts. Set to 0 to disable background remote checks."
         }
       }
     },

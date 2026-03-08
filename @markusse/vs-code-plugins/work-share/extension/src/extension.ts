@@ -114,13 +114,15 @@ export function activate(context: vscode.ExtensionContext) {
 
             const status = await fileActivityTracker.checkConflictStatusForFile(activeEditor.document.uri.fsPath);
             if (status === "conflict") {
-                vscode.window.showWarningMessage("Work Share: Possible merge conflict detected for active file.");
+                vscode.window.showWarningMessage(
+                    "Work Share: Possible incoming or remote-tracking merge conflict detected for active file.",
+                );
                 return;
             }
 
             if (status === "clean") {
                 vscode.window.showInformationMessage(
-                    "Work Share: No incoming patch conflicts detected for active file.",
+                    "Work Share: No incoming patch or remote-tracking conflicts detected for active file.",
                 );
                 return;
             }
