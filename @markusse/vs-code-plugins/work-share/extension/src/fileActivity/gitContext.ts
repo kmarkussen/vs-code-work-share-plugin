@@ -11,6 +11,16 @@ export class GitContextService {
     private gitApi: GitApi | undefined;
     private gitInitializationPromise: Promise<void> | undefined;
 
+    /**
+     * Returns configured git command timeout in milliseconds.
+     */
+    private getGitCommandTimeoutMs(): number {
+        const configuredTimeout = vscode.workspace
+            .getConfiguration("workShare")
+            .get<number>("gitCommandTimeoutMs", 30000);
+        return Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30000;
+    }
+
     public async initialize(): Promise<void> {
         if (this.gitInitializationPromise) {
             return this.gitInitializationPromise;
@@ -71,6 +81,17 @@ export class GitContextService {
 
     public getFirstRepository(): GitRepository | undefined {
         return this.gitApi?.repositories?.[0];
+    }
+
+    public resolveRepositoryByRootPath(repositoryRootPath: string): GitRepository | undefined {
+        if (!this.gitApi || this.gitApi.repositories.length === 0) {
+            return undefined;
+        }
+
+        const normalizedRootPath = repositoryRootPath.replace(/\\/g, "/");
+        return this.gitApi.repositories.find(
+            (repository) => repository.rootUri.fsPath.replace(/\\/g, "/") === normalizedRootPath,
+        );
     }
 
     public async getRepositoryRemoteUrlForRepository(repository: GitRepository): Promise<string | undefined> {
@@ -138,17 +159,77 @@ export class GitContextService {
     }
 
     /**
+     * Attempts to fetch a remote using the VS Code Git API, which can leverage configured credential helpers.
+     */
+    public async fetchRemoteViaGitApi(repositoryRootPath: string, remoteName: string): Promise<GitCommandResult> {
+        await this.initialize();
+        const repository = this.resolveRepositoryByRootPath(repositoryRootPath);
+        if (!repository?.fetch) {
+            return {
+                stdout: "",
+                stderr: "Git API fetch is not available for this repository.",
+                exitCode: 1,
+            };
+        }
+
+        try {
+            await repository.fetch({ remote: remoteName });
+            return {
+                stdout: "",
+                stderr: "",
+                exitCode: 0,
+            };
+        } catch (error) {
+            return {
+                stdout: "",
+                stderr: error instanceof Error ? error.message : String(error),
+                exitCode: 1,
+            };
+        }
+    }
+
+    /**
      * Runs a git command in a target directory.
+     * Always resolves with a result containing stdout, stderr, and exitCode.
+     * Spawn errors (e.g., git not found) resolve with exitCode 127.
+     * Timeouts resolve with exitCode 124.
      */
     public async runGitCommand(workingDirectory: string, args: string[]): Promise<GitCommandResult> {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
+            const timeoutMs = this.getGitCommandTimeoutMs();
+            let stdout = "";
+            let stderr = "";
+            let settled = false;
+
+            const resolveOnce = (result: GitCommandResult) => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                resolve(result);
+            };
+
+            const gitProcessEnv: NodeJS.ProcessEnv = {
+                ...process.env,
+            };
+            gitProcessEnv.GIT_TERMINAL_PROMPT = "0";
+            gitProcessEnv.GCM_INTERACTIVE = "Never";
+
             const childProcess = spawn("git", args, {
                 cwd: workingDirectory,
                 stdio: ["ignore", "pipe", "pipe"],
+                env: gitProcessEnv,
             });
 
-            let stdout = "";
-            let stderr = "";
+            const timeoutHandle = setTimeout(() => {
+                childProcess.kill("SIGTERM");
+                resolveOnce({
+                    stdout,
+                    stderr: `${stderr}\nGit command timed out after ${timeoutMs}ms: git ${args.join(" ")}`.trim(),
+                    exitCode: 124,
+                });
+            }, timeoutMs);
 
             childProcess.stdout.on("data", (data: Buffer) => {
                 stdout += data.toString();
@@ -158,9 +239,18 @@ export class GitContextService {
                 stderr += data.toString();
             });
 
-            childProcess.on("error", reject);
+            childProcess.on("error", (error: Error) => {
+                clearTimeout(timeoutHandle);
+                resolveOnce({
+                    stdout: "",
+                    stderr: `Failed to spawn git command: ${error.message}`,
+                    exitCode: 127,
+                });
+            });
+
             childProcess.on("close", (exitCode) => {
-                resolve({
+                clearTimeout(timeoutHandle);
+                resolveOnce({
                     stdout,
                     stderr,
                     exitCode: exitCode ?? 1,

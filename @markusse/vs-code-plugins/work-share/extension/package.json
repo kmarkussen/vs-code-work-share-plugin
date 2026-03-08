@@ -13,7 +13,7 @@
   "activationEvents": [
     "onStartupFinished"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/extension/src/extension.js",
   "contributes": {
     "commands": [
       {
@@ -38,6 +38,15 @@
         "command": "work-share.checkProjectConflicts",
         "title": "Work Share: Check Project Conflicts",
         "icon": "$(repo)"
+      },
+      {
+        "command": "work-share.refreshView",
+        "title": "Work Share: Refresh View",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "work-share.openConflictDiff",
+        "title": "Work Share: Open Conflict Diff"
       }
     ],
     "menus": {
@@ -62,6 +71,11 @@
           "command": "work-share.checkProjectConflicts",
           "when": "view == workShareActivity",
           "group": "navigation@3"
+        },
+        {
+          "command": "work-share.refreshView",
+          "when": "view == workShareActivity",
+          "group": "navigation@4"
         }
       ]
     },
@@ -97,6 +111,11 @@
           "type": "number",
           "default": 60000,
           "description": "Interval (in milliseconds) for fetching the remote tracking branch and checking the active file for possible merge conflicts. Set to 0 to disable background remote checks."
+        },
+        "workShare.gitCommandTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "Timeout (in milliseconds) for git CLI commands used by Work Share. Set to a higher value for slow remotes."
         }
       }
     },
@@ -124,7 +143,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
+    "test": "node ./out/extension/src/test/runTest.js",
     "package": "vsce package",
     "package:prerelease": "vsce package --pre-release"
   },

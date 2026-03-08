@@ -43,10 +43,10 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension",
-        "--extensionTestsPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/test/suite/index"
+        "--extensionTestsPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/extension/src/test/suite/index"
       ],
       "outFiles": [
-        "${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/test/**/*.js"
+        "${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/**/*.js"
       ],
       "preLaunchTask": "npm: compile - extension"
     }

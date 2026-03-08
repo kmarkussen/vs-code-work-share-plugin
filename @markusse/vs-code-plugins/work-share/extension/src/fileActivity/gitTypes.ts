@@ -9,6 +9,8 @@ export interface GitRemote {
 export interface GitRepository {
     rootUri: vscode.Uri;
     getConfig(key: string): Promise<string | undefined>;
+    /** Runs a repository fetch using VS Code Git extension internals (auth-capable). */
+    fetch?(options?: { remote?: string }): Promise<void>;
     state?: {
         remotes?: GitRemote[];
     };

@@ -20,6 +20,9 @@ export class ApiClient {
     private unconfiguredWarnings = new Set<string>();
     private connectionIssue: ConnectionIssue | undefined;
 
+    private _onDidChangeData: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
+    public readonly onDidChangeData: vscode.Event<void> = this._onDidChangeData.event;
+
     constructor(private logger?: OutputLogger) {
         this.initializeClient();
     }
@@ -97,14 +100,22 @@ export class ApiClient {
     }
 
     private markConnectionHealthy(): void {
+        const hadIssue = this.connectionIssue !== undefined;
         this.connectionIssue = undefined;
+        if (hadIssue) {
+            this._onDidChangeData.fire();
+        }
     }
 
     private markConnectionError(message: string): void {
+        const changed = this.connectionIssue?.message !== message;
         this.connectionIssue = {
             level: "error",
             message,
         };
+        if (changed) {
+            this._onDidChangeData.fire();
+        }
     }
 
     private isIdentityRejected(error: unknown): boolean {
@@ -336,6 +347,7 @@ export class ApiClient {
      */
     public updateConfiguration() {
         this.initializeClient();
+        this._onDidChangeData.fire();
     }
 
     /**

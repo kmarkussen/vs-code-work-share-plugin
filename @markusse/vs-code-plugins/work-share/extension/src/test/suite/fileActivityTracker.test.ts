@@ -93,22 +93,30 @@ suite("FileActivityTracker Test Suite", () => {
                 getRepositoryRemoteUrl(filePath: string): Promise<string | undefined>;
                 getRepositoryRelativeFilePath(filePath: string): string | undefined;
             };
-            getConflictStatusesForFiles(
+            evaluatePatchConflictsForFile(
                 repositoryRemoteUrl: string | undefined,
-                repositoryRelativeFilePaths: string[],
-            ): Promise<Map<string, "clean" | "conflict" | "unknown">>;
-            checkRemoteTrackingConflictStatusForFile(
+                repositoryFilePath: string,
+            ): Promise<import("../../sharedPatch").SharedPatch[]>;
+            evaluateRemoteTrackingConflictStatusForFile(
                 filePath: string,
                 options?: { forceRefresh?: boolean },
-            ): Promise<"clean" | "conflict" | "unknown">;
+            ): Promise<import("../../sharedPatch").SharedPatch | undefined>;
         };
 
         trackerInternals.gitContext.getRepositoryRemoteUrl = async () => "https://github.com/org/repo.git";
         trackerInternals.gitContext.getRepositoryRelativeFilePath = () => "src/example.ts";
-        trackerInternals.getConflictStatusesForFiles = async () => new Map([["src/example.ts", "clean"]]);
-        trackerInternals.checkRemoteTrackingConflictStatusForFile = async () => "conflict";
+        trackerInternals.evaluatePatchConflictsForFile = async () => [];
+        trackerInternals.evaluateRemoteTrackingConflictStatusForFile = async () => ({
+            repositoryRemoteUrl: "https://github.com/org/repo.git",
+            userName: "origin/main",
+            repositoryFilePath: "src/example.ts",
+            baseCommit: "abc123",
+            patch: "diff content",
+            timestamp: new Date(),
+            committed: true,
+        });
 
-        const status = await tracker.checkConflictStatusForFile("/repo/src/example.ts");
+        const status = await tracker.updateConflictStatusForFile("/repo/src/example.ts");
         assert.strictEqual(status, "conflict");
     });
 
@@ -118,22 +126,22 @@ suite("FileActivityTracker Test Suite", () => {
                 getRepositoryRemoteUrl(filePath: string): Promise<string | undefined>;
                 getRepositoryRelativeFilePath(filePath: string): string | undefined;
             };
-            getConflictStatusesForFiles(
+            evaluatePatchConflictsForFile(
                 repositoryRemoteUrl: string | undefined,
-                repositoryRelativeFilePaths: string[],
-            ): Promise<Map<string, "clean" | "conflict" | "unknown">>;
-            checkRemoteTrackingConflictStatusForFile(
+                repositoryFilePath: string,
+            ): Promise<import("../../sharedPatch").SharedPatch[]>;
+            evaluateRemoteTrackingConflictStatusForFile(
                 filePath: string,
                 options?: { forceRefresh?: boolean },
-            ): Promise<"clean" | "conflict" | "unknown">;
+            ): Promise<import("../../sharedPatch").SharedPatch | undefined>;
         };
 
         trackerInternals.gitContext.getRepositoryRemoteUrl = async () => "https://github.com/org/repo.git";
         trackerInternals.gitContext.getRepositoryRelativeFilePath = () => "src/example.ts";
-        trackerInternals.getConflictStatusesForFiles = async () => new Map([["src/example.ts", "clean"]]);
-        trackerInternals.checkRemoteTrackingConflictStatusForFile = async () => "clean";
+        trackerInternals.evaluatePatchConflictsForFile = async () => [];
+        trackerInternals.evaluateRemoteTrackingConflictStatusForFile = async () => undefined;
 
-        const status = await tracker.checkConflictStatusForFile("/repo/src/example.ts");
+        const status = await tracker.updateConflictStatusForFile("/repo/src/example.ts");
         assert.strictEqual(status, "clean");
     });
 

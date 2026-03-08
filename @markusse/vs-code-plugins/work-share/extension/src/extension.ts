@@ -6,6 +6,19 @@ import { FileTreeDataProvider } from "./fileTreeDataProvider";
 
 let fileActivityTracker: FileActivityTracker | undefined;
 
+interface OpenConflictDiffArgs {
+    patch: {
+        repositoryRemoteUrl: string;
+        userName: string;
+        repositoryFilePath: string;
+        baseCommit: string;
+        patch: string;
+        timestamp: string;
+        committed?: boolean;
+    };
+    repositoryRemoteUrl?: string;
+}
+
 /**
  * Updates the context variable that controls toggle button icon visibility.
  */
@@ -36,7 +49,7 @@ export function activate(context: vscode.ExtensionContext) {
     fileActivityTracker = new FileActivityTracker(context, apiClient, logger);
 
     // Initialize tree view provider
-    const treeDataProvider = new FileTreeDataProvider(apiClient, logger);
+    const treeDataProvider = new FileTreeDataProvider(apiClient, fileActivityTracker, logger);
     const treeView = vscode.window.createTreeView("workShareActivity", {
         treeDataProvider: treeDataProvider,
         showCollapseAll: true,
@@ -85,6 +98,29 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.refreshView", () => {
+            treeDataProvider.refresh();
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.openConflictDiff", async (args: OpenConflictDiffArgs) => {
+            if (!fileActivityTracker || !args?.patch) {
+                vscode.window.showWarningMessage("Work Share: Conflict details are unavailable for this item.");
+                return;
+            }
+
+            await fileActivityTracker.openConflictInMergeEditor(
+                {
+                    ...args.patch,
+                    timestamp: new Date(args.patch.timestamp),
+                },
+                args.repositoryRemoteUrl,
+            );
+        }),
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand("work-share.configure", async () => {
             await vscode.commands.executeCommand("workbench.action.openSettings", "workShare");
         }),
@@ -112,7 +148,7 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const status = await fileActivityTracker.checkConflictStatusForFile(activeEditor.document.uri.fsPath);
+            const status = await fileActivityTracker.updateConflictStatusForFile(activeEditor.document.uri.fsPath);
             if (status === "conflict") {
                 vscode.window.showWarningMessage(
                     "Work Share: Possible incoming or remote-tracking merge conflict detected for active file.",

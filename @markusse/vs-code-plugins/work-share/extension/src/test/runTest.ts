@@ -7,7 +7,8 @@ import { runTests } from "@vscode/test-electron";
 async function main() {
     try {
         // The folder containing the Extension Manifest package.json
-        const extensionDevelopmentPath = path.resolve(__dirname, "../../");
+        // Compiled file is at out/extension/src/test/runTest.js, need to go up 4 levels
+        const extensionDevelopmentPath = path.resolve(__dirname, "../../../../");
 
         // The path to test runner
         const extensionTestsPath = path.resolve(__dirname, "./suite/index");

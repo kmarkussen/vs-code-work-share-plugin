@@ -32,6 +32,8 @@ suite("Extension Test Suite", () => {
         assert.ok(commands.includes("work-share.toggleTracking"));
         assert.ok(commands.includes("work-share.checkActiveFileConflicts"));
         assert.ok(commands.includes("work-share.checkProjectConflicts"));
+        assert.ok(commands.includes("work-share.refreshView"));
+        assert.ok(commands.includes("work-share.openConflictDiff"));
     });
 
     test("Configuration should have default values", () => {
@@ -40,6 +42,7 @@ suite("Extension Test Suite", () => {
         assert.strictEqual(config.get("updateInterval"), 5000);
         assert.strictEqual(config.get("apiServerUrl"), "");
         assert.strictEqual(config.get("remoteConflictCheckInterval"), 60000);
+        assert.strictEqual(config.get("gitCommandTimeoutMs"), 30000);
     });
 
     test("Toggle tracking command should change enabled state", async () => {
