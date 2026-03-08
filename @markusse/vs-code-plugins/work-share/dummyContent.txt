@@ -1,9 +1,9 @@
 // Dummy content for conflict testing
 const user = {
   id: 1,
-  name: "John Doe",
-  email: "john@example.com",
-  role: "admin"
+  name: "Bobby Doe",
+  email: "bobby@example.com",
+  role: "user"
 };
 
 function getUserInfo(userId) {
