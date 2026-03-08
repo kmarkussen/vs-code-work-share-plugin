@@ -1,0 +1,24 @@
+{
+  "name": "@work-share/types",
+  "version": "1.0.0",
+  "description": "Shared TypeScript types for Work Share plugin, server, and dashboard",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "private": true,
+  "files": [
+    "lib/**/*",
+    "src/**/*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf lib"
+  },
+  "dependencies": {
+    "class-validator": "^0.14.0",
+    "class-transformer": "^0.5.1",
+    "reflect-metadata": "^0.1.13"
+  },
+  "keywords": ["types", "typescript", "shared"],
+  "author": "",
+  "license": "MIT"
+}

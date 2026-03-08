@@ -603,7 +603,9 @@ This compiles the React app to `server/public/` for serving by the Express serve
 
 3. **Toggle Tracking Button**: A UI toggle button in the Work Share sidebar allows users to enable/disable tracking with a single click. The button shows an eye icon (enabled) or eye-closed icon (disabled) and updates the `workShare.enabled` configuration setting.
 
-4. **Conflict Detection**: The plugin can check for potential merge conflicts by comparing local changes against incoming patches from other team members.
+4. **Auto-Reveal in Tree View**: When you navigate to a file in the editor, the Work Share tree view automatically expands and highlights the corresponding file node. This helps you quickly see who else is working on the same file and view related activity.
+
+5. **Conflict Detection**: The plugin can check for potential merge conflicts by comparing local changes against incoming patches from other team members.
 
 ### Registered Commands
 

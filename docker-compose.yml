@@ -1,8 +1,8 @@
 services:
   work-share-server:
     build:
-      context: ./server
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./@markusse/server/Dockerfile
     container_name: work-share-server
     ports:
       - "3000:3000"
@@ -27,7 +27,7 @@ services:
     environment:
       - VITE_PROXY_TARGET=http://work-share-server:3000
     volumes:
-      - ./server/client:/app
+      - ./@markusse/client:/app
       - /app/node_modules
     depends_on:
       work-share-server:

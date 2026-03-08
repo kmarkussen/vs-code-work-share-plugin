@@ -16,39 +16,39 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/plugin",
+        "--extensionDevelopmentPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension",
         "--user-data-dir=${workspaceFolder}/.vscode-test-user1"
       ],
       "outFiles": [
-        "${workspaceFolder}/plugin/out/**/*.js"
+        "${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/**/*.js"
       ],
-      "preLaunchTask": "npm: compile - plugin"
+      "preLaunchTask": "npm: compile - extension"
     },
     {
       "name": "Run Extension (User 2)",
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/plugin",
+        "--extensionDevelopmentPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension",
         "--user-data-dir=${workspaceFolder}/.vscode-test-user2"
       ],
       "outFiles": [
-        "${workspaceFolder}/plugin/out/**/*.js"
+        "${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/**/*.js"
       ],
-      "preLaunchTask": "npm: compile - plugin"
+      "preLaunchTask": "npm: compile - extension"
     },
     {
       "name": "Extension Tests",
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/plugin",
-        "--extensionTestsPath=${workspaceFolder}/plugin/out/test/suite/index"
+        "--extensionDevelopmentPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension",
+        "--extensionTestsPath=${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/test/suite/index"
       ],
       "outFiles": [
-        "${workspaceFolder}/plugin/out/test/**/*.js"
+        "${workspaceFolder}/@markusse/vs-code-plugins/work-share/extension/out/test/**/*.js"
       ],
-      "preLaunchTask": "npm: compile - plugin"
+      "preLaunchTask": "npm: compile - extension"
     }
   ]
 }

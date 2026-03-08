@@ -8,7 +8,8 @@ A collaborative VS Code extension with a remote server for tracking and sharing 
 - 🔄 **Patch Sharing**: Automatically share code changes when saving files
 - ⚠️ **Conflict Detection**: Get warnings about potential merge conflicts before they happen
 - 👁️ **Toggle Tracking**: Enable/disable tracking with a single click
-- 🌐 **Web Dashboard**: View team activity and code patches in a modern web interface
+- � **Auto-Reveal in Tree**: Tree view automatically expands to show the active file
+- �🌐 **Web Dashboard**: View team activity and code patches in a modern web interface
 - 🐳 **Docker Ready**: Simple deployment with Docker Compose
 
 ## Table of Contents

@@ -58,7 +58,7 @@ echo ""
 
 # Get the workspace root (parent of scripts directory)
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLUGIN_DIR="$WORKSPACE_ROOT/plugin"
+PLUGIN_DIR="$WORKSPACE_ROOT/@markusse/vs-code-plugins/work-share/extension"
 
 echo -e "${YELLOW}📋 Step 1/3: Compiling TypeScript${NC}"
 echo "   Building extension source code..."
@@ -126,7 +126,7 @@ if [ -n "$VSIX_FILE" ]; then
     echo -e "${BLUE}3. Publish to VS Code Marketplace:${NC}"
     echo "   • Create publisher account: https://marketplace.visualstudio.com/manage"
     echo "   • Get Personal Access Token from Azure DevOps"
-    echo "   • Run: cd plugin && vsce publish"
+    echo "   • Run: cd @markusse/vs-code-plugins/work-share/extension && vsce publish"
     echo "   • Guide: https://code.visualstudio.com/api/working-with-extensions/publishing-extension"
     echo ""
 else

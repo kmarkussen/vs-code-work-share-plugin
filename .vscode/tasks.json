@@ -4,7 +4,7 @@
     {
       "type": "npm",
       "script": "watch",
-      "path": "plugin",
+      "path": "@markusse/vs-code-plugins/work-share/extension",
       "problemMatcher": "$tsc-watch",
       "isBackground": true,
       "presentation": {
@@ -14,18 +14,18 @@
         "kind": "build",
         "isDefault": true
       },
-      "label": "npm: watch - plugin"
+      "label": "npm: watch - extension"
     },
     {
       "type": "npm",
       "script": "compile",
-      "path": "plugin",
+      "path": "@markusse/vs-code-plugins/work-share/extension",
       "problemMatcher": "$tsc",
       "presentation": {
         "reveal": "silent"
       },
       "group": "build",
-      "label": "npm: compile - plugin"
+      "label": "npm: compile - extension"
     }
   ]
 }

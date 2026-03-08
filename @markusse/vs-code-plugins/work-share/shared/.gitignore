@@ -1,0 +1,12 @@
+# Build output
+lib/
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+
+# Node modules
+node_modules/
+
+# Keep source files
+!src/**/*
