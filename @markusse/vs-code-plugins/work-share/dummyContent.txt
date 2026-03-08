@@ -1,0 +1,24 @@
+// Dummy content for conflict testing
+const user = {
+  id: 1,
+  name: "John Doe",
+  email: "john@example.com",
+  role: "admin"
+};
+
+function getUserInfo(userId) {
+  console.log(`Fetching user ${userId}`);
+  return user;
+}
+
+const status = "active";
+const timestamp = new Date().toISOString();
+
+// Additional test data
+const items = [
+  { id: 1, title: "Item A", status: "pending" },
+  { id: 2, title: "Item B", status: "completed" },
+  { id: 3, title: "Item C", status: "in-progress" }
+];
+
+export { user, getUserInfo, status, items };
