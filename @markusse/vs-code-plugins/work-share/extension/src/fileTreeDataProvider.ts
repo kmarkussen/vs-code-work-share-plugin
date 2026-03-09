@@ -81,8 +81,11 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
             trackerForStatus && typeof trackerForStatus.getCurrentRemoteConflictAvailabilityIssue === "function" ?
                 await trackerForStatus.getCurrentRemoteConflictAvailabilityIssue()
             :   undefined;
+        
+        const sharingEnabled = vscode.workspace.getConfiguration("workShare").get<boolean>("enabled", true);
 
         const items: FileTreeItem[] = [
+            FileTreeItem.sharingStatus(sharingEnabled),
             FileTreeItem.context(
                 connectionIssue ? "Connection: Issue detected" : "Connection: Connected",
                 connectionIssue ? "warning" : "plug",
@@ -463,6 +466,20 @@ class FileTreeItem extends vscode.TreeItem {
         const item = new FileTreeItem("context", label, vscode.TreeItemCollapsibleState.None, undefined);
         item.iconPath = new vscode.ThemeIcon(iconId);
         item.tooltip = tooltip;
+        return item;
+    }
+
+    static sharingStatus(isEnabled: boolean): FileTreeItem {
+        const label = isEnabled ? "Sharing: On" : "Sharing: Off";
+        const item = new FileTreeItem("sharing-status", label, vscode.TreeItemCollapsibleState.None, undefined);
+        item.iconPath = new vscode.ThemeIcon(isEnabled ? "check" : "circle-slash");
+        item.tooltip = isEnabled ?
+            "Sharing is enabled. Click to disable file activity tracking."
+        :   "Sharing is disabled. Click to enable file activity tracking.";
+        item.command = {
+            command: "work-share.toggleTracking",
+            title: "Toggle Tracking",
+        };
         return item;
     }
 }
