@@ -16,7 +16,8 @@
     "install:extension": "cd @markusse/vs-code-plugins/work-share/extension && npm install",
     "install:server": "cd @markusse/server && npm install",
     "install:client": "cd @markusse/client && npm install",
-    "build": "npm run build:shared && npm run build:extension && npm run build:server",
+    "build": "npm run build:production",
+    "build:production": "npm run build:shared && npm run package && npm run build:server",
     "build:shared": "cd @markusse/vs-code-plugins/work-share/shared && npm run build",
     "build:extension": "cd @markusse/vs-code-plugins/work-share/extension && npm run compile",
     "build:server": "cd @markusse/server && npm run build",
@@ -54,7 +55,7 @@
     "team-tools"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "repository": {
     "type": "git",
     "url": ""

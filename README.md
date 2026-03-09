@@ -205,33 +205,52 @@ npm run watch & npm test
 
 ### Building for Production
 
-**Build all components:**
+**Build all components (production order):**
 
 ```bash
 npm run build
 ```
 
-This compiles:
+This now runs a production-safe sequence:
 
-- ✅ Plugin TypeScript → JavaScript (`plugin/out/`)
+- ✅ Build shared package
+- ✅ Package production VS Code extension (`.vsix`)
+- ✅ Build server + dashboard static assets
+
+This ensures the dashboard download endpoint can serve the latest packaged VSIX.
+
+**Equivalent explicit command:**
+
+```bash
+npm run build:production
+```
+
+This produces:
+
+- ✅ Plugin TypeScript → JavaScript (`@markusse/vs-code-plugins/work-share/extension/out/`)
+- ✅ Plugin VSIX package (`@markusse/vs-code-plugins/work-share/extension/*.vsix`)
 - ✅ Server TypeScript → JavaScript (`server/dist/`)
 - ✅ Dashboard React → Static files (`server/public/`)
 
 **Build individual components:**
 
 ```bash
-# Plugin only
-npm run build:plugin
-# Output: plugin/out/extension.js
+# Extension compile only (no VSIX)
+npm run build:extension
+# Output: @markusse/vs-code-plugins/work-share/extension/out/
+
+# Extension VSIX package
+npm run package
+# Output: @markusse/vs-code-plugins/work-share/extension/*.vsix
 
 # Server only
 npm run build:server
-# Output: server/dist/ + server/public/
+# Output: @markusse/server/dist/ + @markusse/server/public/
 
 # Dashboard only
-cd server/client
+cd @markusse/client
 npm run build
-# Output: server/public/
+# Output: @markusse/server/public/
 ```
 
 ### Build Verification

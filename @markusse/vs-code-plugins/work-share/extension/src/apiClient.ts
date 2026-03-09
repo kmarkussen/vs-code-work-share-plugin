@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance } from "./axiosCompat";
 import * as vscode from "vscode";
 import { FileActivity } from "./fileActivityTracker";
 import { SharedPatch } from "./sharedPatch";

@@ -4,6 +4,11 @@
   "description": "Track and share file activity across team members to improve collaboration",
   "version": "0.0.1",
   "publisher": "your-publisher-name",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kmarkussen/vs-code-work-share-plugin.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -144,8 +149,8 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node ./out/extension/src/test/runTest.js",
-    "package": "vsce package",
-    "package:prerelease": "vsce package --pre-release"
+    "package": "vsce package --no-dependencies",
+    "package:prerelease": "vsce package --pre-release --no-dependencies"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
@@ -160,7 +165,5 @@
     "mocha": "^10.2.0",
     "typescript": "^5.3.2"
   },
-  "dependencies": {
-    "axios": "^1.6.0"
-  }
+  "dependencies": {}
 }

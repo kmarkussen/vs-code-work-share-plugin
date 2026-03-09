@@ -160,6 +160,12 @@ export class GitContextService {
 
     /**
      * Attempts to fetch a remote using the VS Code Git API, which can leverage configured credential helpers.
+     *
+     * PREFERRED METHOD for git operations requiring authentication (fetch, push, pull).
+     * The Git API uses VS Code's configured authentication mechanisms, avoiding password prompts
+     * and properly handling SSH keys, credential managers, and OAuth tokens.
+     *
+     * Use this instead of runGitCommand() for any operation that might require network authentication.
      */
     public async fetchRemoteViaGitApi(repositoryRootPath: string, remoteName: string): Promise<GitCommandResult> {
         await this.initialize();
@@ -193,6 +199,16 @@ export class GitContextService {
      * Always resolves with a result containing stdout, stderr, and exitCode.
      * Spawn errors (e.g., git not found) resolve with exitCode 127.
      * Timeouts resolve with exitCode 124.
+     *
+     * IMPORTANT: This method is for LOCAL git operations only (diff, show, merge-base, etc.).
+     * For operations requiring authentication (fetch, push, pull), use fetchRemoteViaGitApi()
+     * to leverage VS Code's configured authentication and avoid password prompts.
+     *
+     * Environment variables ensure non-interactive execution:
+     * - GIT_TERMINAL_PROMPT=0: Disables terminal password prompts
+     * - GCM_INTERACTIVE=Never: Disables Git Credential Manager interactive prompts
+     * - GIT_ASKPASS=echo: Returns empty string if auth is somehow requested
+     * - stdin=ignore: Prevents any keyboard input
      */
     public async runGitCommand(workingDirectory: string, args: string[]): Promise<GitCommandResult> {
         return new Promise((resolve) => {
@@ -213,12 +229,14 @@ export class GitContextService {
             const gitProcessEnv: NodeJS.ProcessEnv = {
                 ...process.env,
             };
+            // Disable all forms of interactive authentication prompts
             gitProcessEnv.GIT_TERMINAL_PROMPT = "0";
             gitProcessEnv.GCM_INTERACTIVE = "Never";
+            gitProcessEnv.GIT_ASKPASS = "echo"; // Return empty string if askpass is invoked
 
             const childProcess = spawn("git", args, {
                 cwd: workingDirectory,
-                stdio: ["ignore", "pipe", "pipe"],
+                stdio: ["ignore", "pipe", "pipe"], // stdin ignored - no interactive input possible
                 env: gitProcessEnv,
             });
 

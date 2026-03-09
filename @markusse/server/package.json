@@ -14,7 +14,7 @@
   },
   "keywords": ["vscode", "collaboration", "activity-tracking"],
   "author": "",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "dependencies": {
     "@work-share/types": "*",
     "routing-controllers": "^0.10.4",

@@ -56,6 +56,19 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(treeView);
 
+    // Handle checkbox state changes for sharing status
+    context.subscriptions.push(
+        treeView.onDidChangeCheckboxState((event) => {
+            for (const [item] of event.items) {
+                // Check if this is the sharing status item
+                if (item && "kind" in item && item.kind === "sharing-status") {
+                    // Execute toggle tracking command when checkbox state changes
+                    void vscode.commands.executeCommand("work-share.toggleTracking");
+                }
+            }
+        }),
+    );
+
     // Auto-reveal active file when editor changes
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor((editor) => {

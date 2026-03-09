@@ -39,16 +39,30 @@ NC='\033[0m' # No Color
 # Check Node.js version
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
 if [ "$NODE_VERSION" -lt 20 ]; then
-    echo -e "${YELLOW}⚠️  Warning: Node.js version $NODE_VERSION detected${NC}"
-    echo -e "${YELLOW}   @vscode/vsce requires Node.js 20 or higher${NC}"
-    echo ""
-    echo -e "${BLUE}   To resolve this:${NC}"
-    echo "   1. Install Node.js 20+ from https://nodejs.org/"
-    echo "   2. Or use nvm: nvm install 20 && nvm use 20"
-    echo "   3. Then run: npm run package"
-    echo ""
-    echo -e "${YELLOW}   Attempting to continue anyway...${NC}"
-    echo ""
+    echo -e "${YELLOW}⚠️  Node.js version $NODE_VERSION detected. Attempting to switch to Node 20 via nvm...${NC}"
+
+    if [ -z "$NVM_DIR" ]; then
+        NVM_DIR="$HOME/.nvm"
+    fi
+
+    if [ -s "$NVM_DIR/nvm.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$NVM_DIR/nvm.sh"
+        if nvm use 20 >/dev/null 2>&1; then
+            NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+            echo -e "${GREEN}✓ Switched to Node $(node -v)${NC}"
+        fi
+    fi
+
+    if [ "$NODE_VERSION" -lt 20 ]; then
+        echo -e "${RED}✗ Node.js 20+ is required for packaging${NC}"
+        echo -e "${BLUE}   To resolve this:${NC}"
+        echo "   1. Install Node.js 20+ from https://nodejs.org/"
+        echo "   2. Or use nvm: nvm install 20 && nvm use 20"
+        echo "   3. Then run: npm run build (or npm run package)"
+        echo ""
+        exit 1
+    fi
 fi
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -59,6 +73,7 @@ echo ""
 # Get the workspace root (parent of scripts directory)
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN_DIR="$WORKSPACE_ROOT/@markusse/vs-code-plugins/work-share/extension"
+SHARED_VSIX_DIR="$WORKSPACE_ROOT/shared/vsix"
 
 echo -e "${YELLOW}📋 Step 1/3: Compiling TypeScript${NC}"
 echo "   Building extension source code..."
@@ -99,12 +114,16 @@ echo -e "${YELLOW}📊 Step 3/3: Package Information${NC}"
 VSIX_FILE=$(ls -t "$PLUGIN_DIR"/*.vsix 2>/dev/null | head -1)
 
 if [ -n "$VSIX_FILE" ]; then
+    mkdir -p "$SHARED_VSIX_DIR"
+    cp "$VSIX_FILE" "$SHARED_VSIX_DIR/"
+
     FILE_SIZE=$(du -h "$VSIX_FILE" | cut -f1)
     FILE_NAME=$(basename "$VSIX_FILE")
 
     echo "   File: $FILE_NAME"
     echo "   Size: $FILE_SIZE"
     echo "   Location: $VSIX_FILE"
+    echo "   Shared directory: $SHARED_VSIX_DIR/$FILE_NAME"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}  ✅ Extension packaged successfully!${NC}"

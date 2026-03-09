@@ -160,7 +160,8 @@ npm run build            # Build for production to ../public/
 **Root Commands** (run from `/home/markusse/projects/vs-code-plugins/work-share/`):
 
 ```bash
-npm run build            # Build both plugin and server
+npm run build            # Production build: shared -> package VSIX -> server/dashboard
+npm run build:production # Explicit production build sequence
 npm test                 # Run plugin tests
 npm run lint             # Lint both components
 npm start                # Start server in Docker
@@ -237,10 +238,13 @@ npm run install:server   # Install server dependencies only
 ### Build Scripts
 
 ```bash
-npm run build            # Build both plugin and server
-npm run build:plugin     # Compile plugin TypeScript
+npm run build            # Production build: shared -> VSIX package -> server/dashboard
+npm run build:production # Same as build (explicit)
+npm run build:extension  # Compile extension TypeScript (no VSIX)
 npm run build:server     # Compile server TypeScript
 ```
+
+`npm run build` now guarantees the extension VSIX is packaged before website/server build so `/downloads/work-share.vsix` can be served by the dashboard server.
 
 ### Development Scripts
 

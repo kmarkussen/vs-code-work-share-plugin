@@ -582,6 +582,7 @@ export class FileActivityTracker {
 
     /**
      * Fetches the tracking remote for a repository, with interval-based throttling for background checks.
+     * Uses the VS Code Git API to leverage configured authentication and avoid password prompts.
      */
     private async refreshTrackingBranchState(
         repositoryRootPath: string,
@@ -600,40 +601,27 @@ export class FileActivityTracker {
             return true;
         }
 
-        const fetchResult = await this.gitContext.runGitCommand(repositoryRootPath, ["fetch", remoteName]);
-        if (fetchResult.exitCode !== 0) {
-            if (this.isNonInteractiveGitAuthFailure(fetchResult.stderr)) {
-                const fallbackResult = await this.gitContext.fetchRemoteViaGitApi(repositoryRootPath, remoteName);
-                if (fallbackResult.exitCode === 0) {
-                    this.lastRemoteFetchAtByRepositoryRoot.set(repositoryRootPath, now);
-                    this.logger?.info("Remote conflict check: fetched tracking branch via VS Code Git API.", {
-                        repositoryRootPath,
-                        remoteName,
-                    });
-                    return true;
-                }
-
-                this.logger?.warn("Remote conflict check: Git API fetch fallback failed.", {
-                    repositoryRootPath,
-                    remoteName,
-                    stderr: fallbackResult.stderr,
-                });
-            }
-
+        // Use Git API for fetch to leverage VS Code's configured authentication
+        // This avoids password prompts and credential issues
+        const fetchResult = await this.gitContext.fetchRemoteViaGitApi(repositoryRootPath, remoteName);
+        if (fetchResult.exitCode === 0) {
             this.lastRemoteFetchAtByRepositoryRoot.set(repositoryRootPath, now);
-
-            const logLevel = this.isNonInteractiveGitAuthFailure(fetchResult.stderr) ? "info" : "warn";
-            this.logger?.[logLevel]("Remote conflict check skipped: unable to fetch tracking branch.", {
+            this.logger?.info("Remote conflict check: fetched tracking branch via VS Code Git API.", {
                 repositoryRootPath,
                 remoteName,
-                exitCode: fetchResult.exitCode,
-                stderr: fetchResult.stderr,
             });
-            return false;
+            return true;
         }
 
-        this.lastRemoteFetchAtByRepositoryRoot.set(repositoryRootPath, now);
-        return true;
+        // Log as info rather than warning when auth is the issue (expected in some environments)
+        const logLevel = this.isNonInteractiveGitAuthFailure(fetchResult.stderr) ? "info" : "warn";
+        this.logger?.[logLevel]("Remote conflict check: Git API fetch failed.", {
+            repositoryRootPath,
+            remoteName,
+            exitCode: fetchResult.exitCode,
+            stderr: fetchResult.stderr,
+        });
+        return false;
     }
 
     /**
