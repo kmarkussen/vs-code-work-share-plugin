@@ -320,10 +320,13 @@ export class ApiClient {
                 repositoryRemoteUrl: payload.repositoryRemoteUrl,
                 userName: payload.userName,
                 patches: payload.patches.map((patch) => ({
+                    repositoryRemoteUrl: patch.repositoryRemoteUrl,
+                    userName: patch.userName,
                     repositoryFilePath: patch.repositoryFilePath,
                     baseCommit: patch.baseCommit,
                     patch: patch.patch,
                     timestamp: patch.timestamp.toISOString(),
+                    committed: patch.committed,
                 })),
             });
 

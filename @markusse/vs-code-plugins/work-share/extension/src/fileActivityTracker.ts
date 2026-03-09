@@ -1204,6 +1204,7 @@ export class FileActivityTracker {
 
         this.updateTimer = setInterval(() => {
             void this.sendActivitiesToServer();
+            void this.synchronizeRepositoryPatches(undefined, false);
         }, interval);
     }
 

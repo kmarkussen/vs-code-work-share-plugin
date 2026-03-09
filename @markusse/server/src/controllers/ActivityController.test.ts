@@ -438,6 +438,61 @@ describe("ActivityController", () => {
             expect(alicePatches).toHaveLength(0);
             expect(bobPatches).toHaveLength(1);
         });
+
+        it("should accept SharedPatch-compatible items with repository and user fields", async () => {
+            await request(app)
+                .post("/patches/sync")
+                .send({
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    userName: "Alice",
+                    patches: [
+                        {
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            userName: "Alice",
+                            repositoryFilePath: "src/shared-shape.ts",
+                            baseCommit: "abc999",
+                            patch: "diff --git a/src/shared-shape.ts b/src/shared-shape.ts\n...",
+                            timestamp: new Date().toISOString(),
+                            committed: false,
+                        },
+                    ],
+                })
+                .expect(200);
+
+            const response = await request(app)
+                .get("/patches")
+                .query({ repositoryRemoteUrl: "https://github.com/org/repo.git", userName: "Alice" })
+                .expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.patches[0].repositoryFilePath).toBe("src/shared-shape.ts");
+        });
+
+        it("should resolve repository and user from patch items when request-level fields are missing", async () => {
+            await request(app)
+                .post("/patches/sync")
+                .send({
+                    patches: [
+                        {
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            userName: "Alice",
+                            repositoryFilePath: "src/item-level.ts",
+                            baseCommit: "item123",
+                            patch: "diff --git a/src/item-level.ts b/src/item-level.ts\n...",
+                            timestamp: new Date().toISOString(),
+                        },
+                    ],
+                })
+                .expect(200);
+
+            const response = await request(app)
+                .get("/patches")
+                .query({ repositoryRemoteUrl: "https://github.com/org/repo.git", userName: "Alice" })
+                .expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.patches[0].repositoryFilePath).toBe("src/item-level.ts");
+        });
     });
 
     describe("GET /files", () => {

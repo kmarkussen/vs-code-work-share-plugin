@@ -21,16 +21,34 @@ interface StoredActivity extends ActivityDto {
 }
 
 interface PatchSyncItem {
+    repositoryRemoteUrl?: string;
+    userName?: string;
     repositoryFilePath: string;
     baseCommit: string;
     patch: string;
-    timestamp: string;
+    timestamp: string | Date;
+    committed?: boolean;
 }
 
 interface PatchSyncRequest {
-    repositoryRemoteUrl: string;
-    userName: string;
+    repositoryRemoteUrl?: string;
+    userName?: string;
     patches: PatchSyncItem[];
+}
+
+/**
+ * Normalizes sync timestamp values to ISO format for server persistence.
+ */
+function normalizeSyncTimestamp(timestamp: string | Date | undefined): string {
+    if (timestamp instanceof Date) {
+        return timestamp.toISOString();
+    }
+
+    if (typeof timestamp === "string" && timestamp.trim()) {
+        return timestamp;
+    }
+
+    return new Date().toISOString();
 }
 
 // Keep in-memory state at module scope so it persists even if controller instances are recreated per request.
@@ -305,19 +323,30 @@ export class ActivityController {
      */
     @Post("/patches/sync")
     async synchronizePatches(@Body() body: PatchSyncRequest): Promise<PostPatchesResponse> {
-        if (!body?.repositoryRemoteUrl?.trim()) {
-            throw new BadRequestError("repositoryRemoteUrl is required.");
+        const synchronizedPatches = Array.isArray(body?.patches) ? body.patches : [];
+        const resolvedRepositoryRemoteUrl =
+            body?.repositoryRemoteUrl?.trim() ||
+            synchronizedPatches.find((patch) => patch.repositoryRemoteUrl)?.repositoryRemoteUrl?.trim();
+
+        if (!resolvedRepositoryRemoteUrl) {
+            throw new BadRequestError("repositoryRemoteUrl is required (request-level or patch item-level).");
         }
 
-        const normalizedUserName = normalizeAndValidateIdentity(body.userName);
-        const synchronizedPatches = Array.isArray(body.patches) ? body.patches : [];
+        const resolvedUserName =
+            body?.userName?.trim() || synchronizedPatches.find((patch) => patch.userName)?.userName?.trim();
+
+        if (!resolvedUserName) {
+            throw new BadRequestError("userName is required (request-level or patch item-level).");
+        }
+
+        const normalizedUserName = normalizeAndValidateIdentity(resolvedUserName);
 
         let removedCount = 0;
         for (const [fileKey, records] of patchStore.entries()) {
             const retainedRecords = records.filter(
                 (record) =>
                     !(
-                        record.repositoryRemoteUrl === body.repositoryRemoteUrl &&
+                        record.repositoryRemoteUrl === resolvedRepositoryRemoteUrl &&
                         record.userName === normalizedUserName
                     ),
             );
@@ -336,18 +365,24 @@ export class ActivityController {
                 continue;
             }
 
-            const key = `${body.repositoryRemoteUrl}:${patch.repositoryFilePath}`;
+            const patchRepositoryRemoteUrl = patch.repositoryRemoteUrl?.trim() || resolvedRepositoryRemoteUrl;
+            const patchUserName = patch.userName?.trim() || normalizedUserName;
+            if (!patchRepositoryRemoteUrl || !patchUserName) {
+                continue;
+            }
+
+            const key = `${patchRepositoryRemoteUrl}:${patch.repositoryFilePath}`;
             if (!patchStore.has(key)) {
                 patchStore.set(key, []);
             }
 
             patchStore.get(key)!.push({
-                repositoryRemoteUrl: body.repositoryRemoteUrl,
-                userName: normalizedUserName,
+                repositoryRemoteUrl: patchRepositoryRemoteUrl,
+                userName: patchUserName,
                 repositoryFilePath: patch.repositoryFilePath,
                 baseCommit: patch.baseCommit,
                 patch: patch.patch,
-                timestamp: patch.timestamp,
+                timestamp: normalizeSyncTimestamp(patch.timestamp),
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                 receivedAt: new Date().toISOString(),
             });
