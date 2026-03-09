@@ -1,9 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <circle cx="50" cy="50" r="45" fill="#007ACC" stroke="#005A9E" stroke-width="2"/>
-  <g fill="white">
-    <circle cx="30" cy="40" r="8"/>
-    <circle cx="50" cy="40" r="8"/>
-    <circle cx="70" cy="40" r="8"/>
-    <path d="M 30 50 L 50 70 L 70 50" stroke="white" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Gradient background -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0078D4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#005A9E;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFB900;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FF8C00;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background rounded square -->
+  <rect x="8" y="8" width="112" height="112" rx="20" fill="url(#bgGrad)"/>
+  
+  <!-- Three people icons arranged in triangle -->
+  <!-- Top person -->
+  <g transform="translate(64, 28)">
+    <circle cx="0" cy="0" r="10" fill="white"/>
+    <path d="M -12 18 Q -12 8 0 8 Q 12 8 12 18 Z" fill="white"/>
+  </g>
+  
+  <!-- Bottom left person -->
+  <g transform="translate(35, 75)">
+    <circle cx="0" cy="0" r="9" fill="white"/>
+    <path d="M -11 16 Q -11 7 0 7 Q 11 7 11 16 Z" fill="white"/>
+  </g>
+  
+  <!-- Bottom right person -->
+  <g transform="translate(93, 75)">
+    <circle cx="0" cy="0" r="9" fill="white"/>
+    <path d="M -11 16 Q -11 7 0 7 Q 11 7 11 16 Z" fill="white"/>
+  </g>
+  
+  <!-- Connection lines with accent color -->
+  <g stroke="url(#accentGrad)" stroke-width="4" stroke-linecap="round" opacity="0.9">
+    <line x1="64" y1="45" x2="40" y2="75" />
+    <line x1="64" y1="45" x2="88" y2="75" />
+    <line x1="40" y1="85" x2="88" y2="85" />
+  </g>
+  
+  <!-- Connection nodes (dots) -->
+  <g fill="url(#accentGrad)">
+    <circle cx="64" cy="45" r="4"/>
+    <circle cx="40" cy="75" r="4"/>
+    <circle cx="88" cy="75" r="4"/>
+    <circle cx="64" cy="85" r="4"/>
   </g>
 </svg>
