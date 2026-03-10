@@ -10,6 +10,7 @@ import { ConflictStatus, FileActivity } from "./fileActivity/types";
 import { GitContextService } from "./fileActivity/gitContext";
 import { UserIdentityService } from "./fileActivity/identityService";
 import { PatchSharingService } from "./fileActivity/patchSharingService";
+import { GitRepository } from "./fileActivity/gitTypes";
 
 export { isGitInternalPath } from "./fileActivity/pathUtils";
 export type { ConflictStatus, FileActivity } from "./fileActivity/types";
@@ -31,6 +32,7 @@ export class FileActivityTracker {
     private mergeViewTempDirectories: Set<string> = new Set();
     private patchSyncInFlightByRepository: Set<string> = new Set();
     private lastPatchSyncAtByRepositoryRemoteUrl: Map<string, number> = new Map();
+    private synchronizedRepositoryRoots: Set<string> = new Set();
 
     /**
      * Master list of conflicts for project files.
@@ -82,6 +84,14 @@ export class FileActivityTracker {
 
         return undefined;
     }
+
+    // public async getCurrentRepositoryTrackingBranch(): Promise<string | undefined> {
+    //     await this.gitContext.initialize();
+    //     const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+    //     if (activeFilePath) {
+    //         return this.gitContext.getRepositoryTrackingBranch(activeFilePath);
+    //     }
+    // }
 
     /**
      * Returns the resolved current user identity used for activity and patch payloads.
@@ -210,30 +220,33 @@ export class FileActivityTracker {
 
     /**
      * Replaces the current user's server-side patch set for a repository with active local patches.
+     *
+     * fileEdits - These are the local that the user has made
+     *
      */
-    private async synchronizeRepositoryPatches(filePath?: string, force = false): Promise<void> {
+    private async synchronizeRepositoryPatches(filePath?: string, force = false): Promise<boolean> {
         const syncIntervalMs = 15000;
         const repositoryRemoteUrl =
             (filePath ? await this.gitContext.getRepositoryRemoteUrl(filePath) : undefined) ??
             (await this.getCurrentRepositoryRemoteUrl());
 
         if (!repositoryRemoteUrl) {
-            return;
+            return false;
         }
 
         const userName = await this.identityService.resolveIdentifiedUserName(filePath);
         if (!userName) {
-            return;
+            return false;
         }
 
         if (this.patchSyncInFlightByRepository.has(repositoryRemoteUrl)) {
-            return;
+            return false;
         }
 
         const now = Date.now();
         const lastSyncAt = this.lastPatchSyncAtByRepositoryRemoteUrl.get(repositoryRemoteUrl) ?? 0;
         if (!force && now - lastSyncAt < syncIntervalMs) {
-            return;
+            return false;
         }
 
         this.patchSyncInFlightByRepository.add(repositoryRemoteUrl);
@@ -255,8 +268,142 @@ export class FileActivityTracker {
                 userName,
                 synchronizedPatchCount: activePatches.length,
             });
+            return true;
         } catch (error) {
             this.logger?.warn("Patch sync failed for repository.", {
+                repositoryRemoteUrl,
+                message: error instanceof Error ? error.message : String(error),
+            });
+            return false;
+        } finally {
+            this.patchSyncInFlightByRepository.delete(repositoryRemoteUrl);
+        }
+    }
+
+    /**
+     * Ensures each repository is fully synchronized once, then only on explicit/manual triggers.
+     */
+    private async ensureRepositorySynchronizedOnce(filePath: string): Promise<void> {
+        await this.gitContext.initialize();
+        const repository = this.gitContext.resolveRepositoryForFile(filePath);
+        if (!repository) {
+            return;
+        }
+
+        const repositoryRootPath = repository.rootUri.fsPath;
+        if (this.synchronizedRepositoryRoots.has(repositoryRootPath)) {
+            return;
+        }
+
+        const synchronized = await this.synchronizeRepositoryPatches(filePath, true);
+        if (synchronized) {
+            this.synchronizedRepositoryRoots.add(repositoryRootPath);
+            this.logger?.info("Initial repository patch sync completed.", {
+                repositoryRootPath,
+            });
+        }
+    }
+
+    /**
+     * Runs initial patch synchronization for the workspace-root repository.
+     */
+    private async synchronizeWorkspaceRepositoryOnStart(): Promise<void> {
+        await this.gitContext.initialize();
+        const workspaceRepository = this.gitContext.resolveWorkspaceRepository();
+        if (!workspaceRepository) {
+            return;
+        }
+
+        const repositoryRootPath = workspaceRepository.rootUri.fsPath;
+        if (this.synchronizedRepositoryRoots.has(repositoryRootPath)) {
+            return;
+        }
+
+        const activeEditorPath = vscode.window.activeTextEditor?.document.uri.fsPath;
+        if (activeEditorPath) {
+            const activeRepository = this.gitContext.resolveRepositoryForFile(activeEditorPath);
+            if (activeRepository?.rootUri.fsPath === repositoryRootPath) {
+                await this.ensureRepositorySynchronizedOnce(activeEditorPath);
+                return;
+            }
+        }
+
+        const synced = await this.synchronizeRepositoryPatches(undefined, true);
+        if (synced) {
+            this.synchronizedRepositoryRoots.add(repositoryRootPath);
+            this.logger?.info("Initial workspace repository sync completed.", {
+                repositoryRootPath,
+            });
+        }
+    }
+
+    /**
+     * Manually synchronizes the currently active repository regardless of prior initial sync state.
+     */
+    public async syncCurrentRepository(): Promise<void> {
+        const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+        const synchronized = await this.synchronizeRepositoryPatches(activeFilePath, true);
+        if (synchronized && activeFilePath) {
+            const repository = this.gitContext.resolveRepositoryForFile(activeFilePath);
+            if (repository) {
+                this.synchronizedRepositoryRoots.add(repository.rootUri.fsPath);
+            }
+        }
+    }
+
+    /**
+     * Manually synchronizes all known repositories in the workspace.
+     */
+    public async syncAllKnownRepositories(): Promise<void> {
+        await this.gitContext.initialize();
+        const repositories = (await this.gitContext.getRepositories()) ?? [];
+        for (const repository of repositories) {
+            await this.syncRepositoryByHandle(repository);
+        }
+    }
+
+    /**
+     * Synchronizes one repository by handle and marks it as initialized when successful.
+     */
+    private async syncRepositoryByHandle(repository: GitRepository): Promise<void> {
+        const repositoryRootPath = repository.rootUri.fsPath;
+        const repositoryRemoteUrl = await this.gitContext.getRepositoryRemoteUrlForRepository(repository);
+        if (!repositoryRemoteUrl) {
+            return;
+        }
+
+        const userName = await this.identityService.resolveIdentifiedUserName(repositoryRootPath);
+        if (!userName) {
+            return;
+        }
+
+        if (this.patchSyncInFlightByRepository.has(repositoryRemoteUrl)) {
+            return;
+        }
+
+        this.patchSyncInFlightByRepository.add(repositoryRemoteUrl);
+        try {
+            const activePatches = await this.patchSharingService.buildActivePatchesForResolvedRepository(
+                repository,
+                repositoryRemoteUrl,
+                userName,
+            );
+            await this.apiClient.syncRepositoryUserPatches({
+                repositoryRemoteUrl,
+                userName,
+                patches: activePatches,
+            });
+
+            this.lastPatchSyncAtByRepositoryRemoteUrl.set(repositoryRemoteUrl, Date.now());
+            this.synchronizedRepositoryRoots.add(repositoryRootPath);
+            this.logger?.info("Repository patch sync completed.", {
+                repositoryRootPath,
+                repositoryRemoteUrl,
+                synchronizedPatchCount: activePatches.length,
+            });
+        } catch (error) {
+            this.logger?.warn("Repository patch sync failed.", {
+                repositoryRootPath,
                 repositoryRemoteUrl,
                 message: error instanceof Error ? error.message : String(error),
             });
@@ -413,6 +560,16 @@ export class FileActivityTracker {
         revision: string,
         repositoryFilePath: string,
     ): Promise<string | undefined> {
+        await this.gitContext.initialize();
+        const repository = this.gitContext.resolveRepositoryByRootPath(repositoryRootPath);
+        if (repository) {
+            try {
+                return await repository.show(revision, repositoryFilePath);
+            } catch {
+                // Fallback to CLI for edge cases where the extension API cannot read this revision/path.
+            }
+        }
+
         const result = await this.gitContext.runGitCommand(repositoryRootPath, [
             "show",
             `${revision}:${repositoryFilePath}`,
@@ -642,19 +799,13 @@ export class FileActivityTracker {
             return undefined;
         }
 
-        const upstreamRefResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{u}",
-        ]);
-        if (upstreamRefResult.exitCode !== 0) {
+        const upstream = repository.state.HEAD?.upstream;
+        if (!upstream?.remote || !upstream.name) {
             this.logger?.info("Remote conflict check skipped: repository has no upstream tracking branch.", {
                 filePath,
-                stderr: upstreamRefResult.stderr,
             });
 
-            if (this.isDetachedHeadWithoutUpstream(upstreamRefResult.stderr)) {
+            if (!repository.state.HEAD?.name) {
                 this.remoteConflictAvailabilityIssueByRepositoryRoot.set(
                     repository.rootUri.fsPath,
                     "Remote conflict checks unavailable: repository is in detached HEAD state (no tracking branch).",
@@ -667,7 +818,7 @@ export class FileActivityTracker {
 
         this.remoteConflictAvailabilityIssueByRepositoryRoot.delete(repository.rootUri.fsPath);
 
-        const upstreamRef = upstreamRefResult.stdout.trim();
+        const upstreamRef = `${upstream.remote}/${upstream.name}`;
         if (!upstreamRef) {
             return undefined;
         }
@@ -681,44 +832,35 @@ export class FileActivityTracker {
             return undefined;
         }
 
-        const mergeBaseResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
-            "merge-base",
-            "HEAD",
-            upstreamRef,
-        ]);
-        if (mergeBaseResult.exitCode !== 0) {
+        let mergeBase: string | undefined;
+        try {
+            mergeBase = await repository.getMergeBase("HEAD", upstreamRef);
+        } catch (error) {
             this.logger?.warn("Remote conflict check: failed to resolve merge base.", {
                 filePath,
                 upstreamRef,
-                stderr: mergeBaseResult.stderr,
+                error: error instanceof Error ? error.message : String(error),
             });
             return undefined;
         }
-
-        const mergeBase = mergeBaseResult.stdout.trim();
         if (!mergeBase) {
             return undefined;
         }
 
-        const diffResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
-            "diff",
-            "--binary",
-            "--full-index",
-            `${mergeBase}..${upstreamRef}`,
-            "--",
-            repositoryFilePath,
-        ]);
-        if (diffResult.exitCode !== 0) {
+        let upstreamDiffPatch: string;
+        try {
+            upstreamDiffPatch = await repository.diffBetweenPatch(mergeBase, upstreamRef, repositoryFilePath);
+        } catch (error) {
             this.logger?.warn("Remote conflict check: failed to diff tracking branch.", {
                 filePath,
                 repositoryFilePath,
                 upstreamRef,
-                stderr: diffResult.stderr,
+                error: error instanceof Error ? error.message : String(error),
             });
             return undefined;
         }
 
-        if (!diffResult.stdout.trim()) {
+        if (!upstreamDiffPatch.trim()) {
             return undefined;
         }
 
@@ -732,15 +874,12 @@ export class FileActivityTracker {
             const upstreamFile = path.join(tempDirectory, "upstream");
 
             // Get file content from merge-base
-            const baseContent = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
-                "show",
-                `${mergeBase}:${repositoryFilePath}`,
-            ]);
-            if (baseContent.exitCode !== 0) {
+            const baseContent = await this.readGitFileContent(repository.rootUri.fsPath, mergeBase, repositoryFilePath);
+            if (baseContent === undefined) {
                 // File might not exist at merge-base, treat as no conflict possible
                 return undefined;
             }
-            await fs.writeFile(baseFile, baseContent.stdout, "utf8");
+            await fs.writeFile(baseFile, baseContent, "utf8");
 
             // Get file content from working tree (current state with uncommitted changes)
             try {
@@ -752,15 +891,16 @@ export class FileActivityTracker {
             }
 
             // Get file content from upstream
-            const upstreamContent = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
-                "show",
-                `${upstreamRef}:${repositoryFilePath}`,
-            ]);
-            if (upstreamContent.exitCode !== 0) {
+            const upstreamContent = await this.readGitFileContent(
+                repository.rootUri.fsPath,
+                upstreamRef,
+                repositoryFilePath,
+            );
+            if (upstreamContent === undefined) {
                 // File doesn't exist in upstream anymore
                 return undefined;
             }
-            await fs.writeFile(upstreamFile, upstreamContent.stdout, "utf8");
+            await fs.writeFile(upstreamFile, upstreamContent, "utf8");
 
             // Run git merge-file to detect conflicts
             // Exit code: 0 = no conflicts, 1 = conflicts detected
@@ -791,7 +931,7 @@ export class FileActivityTracker {
                     userName: upstreamRef,
                     repositoryFilePath,
                     baseCommit: mergeBase,
-                    patch: diffResult.stdout,
+                    patch: upstreamDiffPatch,
                     timestamp: new Date(),
                     committed: true,
                 };
@@ -1119,6 +1259,7 @@ export class FileActivityTracker {
             vscode.window.onDidChangeActiveTextEditor((editor) => {
                 if (editor) {
                     void this.trackActivity(editor.document.uri.fsPath, "open");
+                    void this.ensureRepositorySynchronizedOnce(editor.document.uri.fsPath);
                     void this.refreshActiveFileRemoteConflicts(true);
                 }
             }),
@@ -1151,7 +1292,7 @@ export class FileActivityTracker {
         // Start periodic update timer
         this.startUpdateTimer();
         this.startRemoteConflictTimer();
-        void this.synchronizeRepositoryPatches(undefined, true);
+        void this.synchronizeWorkspaceRepositoryOnStart();
         void this.refreshActiveFileRemoteConflicts(true);
     }
 
@@ -1177,6 +1318,7 @@ export class FileActivityTracker {
         this.projectFileConflicts.clear();
         this.patchSyncInFlightByRepository.clear();
         this.lastPatchSyncAtByRepositoryRemoteUrl.clear();
+        this.synchronizedRepositoryRoots.clear();
         this.lastRemoteFetchAtByRepositoryRoot.clear();
         this.lastDetachedHeadWarningAtByRepositoryRoot.clear();
         this.remoteConflictAvailabilityIssueByRepositoryRoot.clear();

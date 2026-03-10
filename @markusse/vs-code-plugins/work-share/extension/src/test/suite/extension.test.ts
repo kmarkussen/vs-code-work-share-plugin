@@ -34,6 +34,8 @@ suite("Extension Test Suite", () => {
         assert.ok(commands.includes("work-share.checkProjectConflicts"));
         assert.ok(commands.includes("work-share.refreshView"));
         assert.ok(commands.includes("work-share.openConflictDiff"));
+        assert.ok(commands.includes("work-share.syncCurrentRepository"));
+        assert.ok(commands.includes("work-share.syncAllRepositories"));
     });
 
     test("Configuration should have default values", () => {

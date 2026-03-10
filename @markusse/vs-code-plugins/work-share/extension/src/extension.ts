@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { FileActivityTracker } from "./fileActivityTracker";
 import { ApiClient } from "./apiClient";
 import { OutputLogger } from "./outputLogger";
-import { FileTreeDataProvider } from "./fileTreeDataProvider";
+import { FileTreeDataProvider, WorkStatusDataProvider } from "./fileTreeDataProvider";
 
 let fileActivityTracker: FileActivityTracker | undefined;
 
@@ -56,9 +56,16 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(treeView);
 
+    const statusTreeDataProvider = new WorkStatusDataProvider(apiClient, fileActivityTracker, logger);
+    const statusTreeView = vscode.window.createTreeView("workShareStatus", {
+        treeDataProvider: statusTreeDataProvider,
+        showCollapseAll: true,
+    });
+    context.subscriptions.push(statusTreeView);
+
     // Handle checkbox state changes for sharing status
     context.subscriptions.push(
-        treeView.onDidChangeCheckboxState((event) => {
+        statusTreeView.onDidChangeCheckboxState((event) => {
             for (const [item] of event.items) {
                 // Check if this is the sharing status item
                 if (item && "kind" in item && item.kind === "sharing-status") {
@@ -112,6 +119,32 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand("work-share.refreshView", () => {
+            treeDataProvider.refresh();
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.syncCurrentRepository", async () => {
+            if (!fileActivityTracker) {
+                vscode.window.showInformationMessage("Work Share: Sync coordinator is not available.");
+                return;
+            }
+
+            await fileActivityTracker.syncCurrentRepository();
+            vscode.window.showInformationMessage("Work Share: Current repository synchronized.");
+            treeDataProvider.refresh();
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.syncAllRepositories", async () => {
+            if (!fileActivityTracker) {
+                vscode.window.showInformationMessage("Work Share: Sync coordinator is not available.");
+                return;
+            }
+
+            await fileActivityTracker.syncAllKnownRepositories();
+            vscode.window.showInformationMessage("Work Share: All known repositories synchronized.");
             treeDataProvider.refresh();
         }),
     );

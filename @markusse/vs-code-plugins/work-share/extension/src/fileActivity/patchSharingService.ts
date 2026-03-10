@@ -1,11 +1,13 @@
 import * as vscode from "vscode";
 import { createHash } from "crypto";
+import * as path from "path";
 import { SharedPatch } from "../sharedPatch";
 import { ApiClient } from "../apiClient";
 import { OutputLogger } from "../outputLogger";
 import { isGitInternalPath } from "./pathUtils";
 import { GitContextService } from "./gitContext";
 import { UserIdentityService } from "./identityService";
+import { GitRepository } from "./gitTypes";
 
 /**
  * Generates and publishes repository-scoped patches on file save.
@@ -19,6 +21,54 @@ export class PatchSharingService {
         private apiClient: ApiClient,
         private logger?: OutputLogger,
     ) {}
+
+    /**
+     * Resolves the current HEAD commit hash, preferring Git API state and falling back to CLI.
+     */
+    private async resolveBaseCommit(repository: GitRepository): Promise<string | undefined> {
+        const headCommit = repository.state?.HEAD?.commit?.trim();
+        if (headCommit) {
+            return headCommit;
+        }
+
+        const baseCommitResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, ["rev-parse", "HEAD"]);
+        if (baseCommitResult.exitCode !== 0) {
+            return undefined;
+        }
+
+        const baseCommit = baseCommitResult.stdout.trim();
+        return baseCommit || undefined;
+    }
+
+    /**
+     * Lists unstaged repository-relative file paths, preferring Git API state and falling back to CLI.
+     */
+    private async resolveChangedRepositoryFilePaths(repository: GitRepository): Promise<string[]> {
+        const rootPath = repository.rootUri.fsPath;
+        const changes = repository.state?.workingTreeChanges;
+
+        if (changes && changes.length > 0) {
+            const filePathSet = new Set<string>();
+            for (const change of changes) {
+                const relativePath = path.relative(rootPath, change.uri.fsPath).replace(/\\/g, "/").trim();
+                if (relativePath) {
+                    filePathSet.add(relativePath);
+                }
+            }
+
+            return Array.from(filePathSet.values());
+        }
+
+        const changedFilesResult = await this.gitContext.runGitCommand(rootPath, ["diff", "--name-only"]);
+        if (changedFilesResult.exitCode !== 0) {
+            return [];
+        }
+
+        return changedFilesResult.stdout
+            .split(/\r?\n/)
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0);
+    }
 
     /**
      * Builds the complete set of active unstaged patches for a repository and user.
@@ -35,30 +85,27 @@ export class PatchSharingService {
             return [];
         }
 
+        return this.buildActivePatchesForResolvedRepository(repository, repositoryRemoteUrl, userName);
+    }
+
+    /**
+     * Builds the complete set of active unstaged patches for a resolved repository and user.
+     */
+    public async buildActivePatchesForResolvedRepository(
+        repository: GitRepository,
+        repositoryRemoteUrl: string,
+        userName: string,
+    ): Promise<SharedPatch[]> {
+
         const repositoryRootPath = repository.rootUri.fsPath;
-        const baseCommitResult = await this.gitContext.runGitCommand(repositoryRootPath, ["rev-parse", "HEAD"]);
-        if (baseCommitResult.exitCode !== 0) {
+        const baseCommit = await this.resolveBaseCommit(repository);
+        if (!baseCommit) {
             this.logger?.warn("Patch sync skipped: could not resolve base commit.", {
                 repositoryRemoteUrl,
-                stderr: baseCommitResult.stderr,
             });
             return [];
         }
-
-        const baseCommit = baseCommitResult.stdout.trim();
-        const changedFilesResult = await this.gitContext.runGitCommand(repositoryRootPath, ["diff", "--name-only"]);
-        if (changedFilesResult.exitCode !== 0) {
-            this.logger?.warn("Patch sync skipped: could not list changed files.", {
-                repositoryRemoteUrl,
-                stderr: changedFilesResult.stderr,
-            });
-            return [];
-        }
-
-        const repositoryFilePaths = changedFilesResult.stdout
-            .split(/\r?\n/)
-            .map((entry) => entry.trim())
-            .filter((entry) => entry.length > 0);
+        const repositoryFilePaths = await this.resolveChangedRepositoryFilePaths(repository);
 
         const activePatches: SharedPatch[] = [];
         for (const repositoryFilePath of repositoryFilePaths) {
@@ -138,16 +185,14 @@ export class PatchSharingService {
         }
 
         const repositoryRootPath = repository.rootUri.fsPath;
-        const baseCommitResult = await this.gitContext.runGitCommand(repositoryRootPath, ["rev-parse", "HEAD"]);
-        if (baseCommitResult.exitCode !== 0) {
+        const baseCommit = await this.resolveBaseCommit(repository);
+        if (!baseCommit) {
             this.logger?.error("Patch sharing failed: could not resolve base commit.", {
                 filePath,
-                stderr: baseCommitResult.stderr,
             });
             return;
         }
 
-        const baseCommit = baseCommitResult.stdout.trim();
         const patchResult = await this.gitContext.runGitCommand(repositoryRootPath, ["diff", "--", repositoryFilePath]);
         if (patchResult.exitCode !== 0) {
             this.logger?.error("Patch sharing failed: git diff command failed.", {

@@ -52,6 +52,16 @@
       {
         "command": "work-share.openConflictDiff",
         "title": "Work Share: Open Conflict Diff"
+      },
+      {
+        "command": "work-share.syncCurrentRepository",
+        "title": "Work Share: Sync Current Repository",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "work-share.syncAllRepositories",
+        "title": "Work Share: Sync All Known Repositories",
+        "icon": "$(repo-sync)"
       }
     ],
     "menus": {
@@ -81,6 +91,16 @@
           "command": "work-share.refreshView",
           "when": "view == workShareActivity",
           "group": "navigation@4"
+        },
+        {
+          "command": "work-share.syncCurrentRepository",
+          "when": "view == workShareActivity",
+          "group": "navigation@5"
+        },
+        {
+          "command": "work-share.syncAllRepositories",
+          "when": "view == workShareActivity",
+          "group": "navigation@6"
         }
       ]
     },
@@ -135,6 +155,10 @@
     },
     "views": {
       "work-share": [
+        {
+          "id": "workShareStatus",
+          "name": "Work Share Status"
+        },
         {
           "id": "workShareActivity",
           "name": "File Activity"
