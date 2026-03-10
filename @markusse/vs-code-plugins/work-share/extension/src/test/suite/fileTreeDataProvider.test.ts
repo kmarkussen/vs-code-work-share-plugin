@@ -1,51 +1,167 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
-import { FileTreeDataProvider } from "../../fileTreeDataProvider";
+import {
+    ConflictTreeDataProvider,
+    FileTreeDataProvider,
+    UserTreeDataProvider,
+    WorkStatusDataProvider,
+} from "../../fileTreeDataProvider";
 
 function createMockEvent<T>(): vscode.Event<T> {
     return () => ({ dispose: () => {} });
 }
 
 suite("FileTreeDataProvider Test Suite", () => {
-    test("Root should show connected status when no active files are returned", async () => {
+    test("WorkStatus root should include connection, user, repository, and upstream rows", async () => {
         const apiClientStub = {
             getConnectionIssue: () => undefined,
-            getFiles: async () => [],
             onDidChangeData: createMockEvent<void>(),
-        } as const;
+        };
 
-        const provider = new FileTreeDataProvider(apiClientStub as never);
-        const rootItems = await provider.getChildren();
+        const trackerStub = {
+            getCurrentUserName: async () => "Alice",
+            isActivelySharingActivity: async () => true,
+            getCurrentRemoteConflictAvailabilityIssue: async () => undefined,
+            getCurrentRepositoryRemoteUrl: async () => "https://github.com/org/repo.git",
+            getUpstreamBranchForCurrentRepository: async () => "origin/main",
+            onDidChangeConflictStatus: createMockEvent<void>(),
+        };
 
-        const statusGroup = rootItems.find((item) => item.kind === "status-group");
-        assert.ok(statusGroup, "Expected status section root item");
-        const statusItems = await provider.getChildren(statusGroup);
-        assert.ok(statusItems.some((item) => item.label === "Connection: Connected"));
-        assert.ok(statusItems.some((item) => item.label === "Current User: Unknown user"));
-        assert.ok(rootItems.some((item) => item.label === "No active files right now"));
+        const provider = new WorkStatusDataProvider(apiClientStub as never, trackerStub as never);
+        const root = await provider.getChildren();
+        assert.strictEqual(root.length, 1);
+        assert.strictEqual(root[0].kind, "status-group");
+
+        const rows = await provider.getChildren(root[0]);
+        const labels = rows.map((item) => String(item.label));
+        assert.ok(labels.includes("Connection: Connected"));
+        assert.ok(labels.includes("Current User: Alice"));
+        assert.ok(labels.includes("Repository: repo"));
+        assert.ok(labels.includes("Upstream: origin/main"));
     });
 
-    test("Root should show status item when files fetch throws unexpectedly", async () => {
+    test("WorkStatus should show warning when repository has no upstream", async () => {
         const apiClientStub = {
             getConnectionIssue: () => undefined,
-            getFiles: async () => {
-                throw new Error("Unexpected payload parse error");
-            },
             onDidChangeData: createMockEvent<void>(),
-        } as const;
+        };
 
-        const provider = new FileTreeDataProvider(apiClientStub as never);
-        const rootItems = await provider.getChildren();
+        const trackerStub = {
+            getCurrentUserName: async () => "Alice",
+            isActivelySharingActivity: async () => true,
+            getCurrentRemoteConflictAvailabilityIssue: async () => undefined,
+            getCurrentRepositoryRemoteUrl: async () => "https://github.com/org/repo.git",
+            getUpstreamBranchForCurrentRepository: async () => undefined,
+            onDidChangeConflictStatus: createMockEvent<void>(),
+        };
 
-        assert.ok(rootItems.length > 0, "Expected at least one root item when fetch fails");
-        assert.ok(
-            rootItems.some((item) => item.label === "Failed to load file activity. Check Work Share API connection."),
-        );
+        const provider = new WorkStatusDataProvider(apiClientStub as never, trackerStub as never);
+        const root = await provider.getChildren();
+        const rows = await provider.getChildren(root[0]);
+        assert.ok(rows.some((item) => item.label === "No upstream branch — run 'Select Upstream Branch'"));
     });
 
-    test("File node should show warning icon when tracker reports remote conflict", async () => {
+    test("ConflictTree should render file-first nodes with source children", async () => {
+        const trackerStub = {
+            getAllProjectFileConflicts: () =>
+                new Map([
+                    [
+                        "src/example.ts",
+                        [
+                            {
+                                repositoryRemoteUrl: "https://github.com/org/repo.git",
+                                userName: "Bob",
+                                repositoryFilePath: "src/example.ts",
+                                baseCommit: "abc12345",
+                                patch: "diff --git a/src/example.ts b/src/example.ts\n...",
+                                timestamp: new Date("2026-03-10T10:00:00.000Z"),
+                                changeType: "pending",
+                                commitShortSha: "abc12345",
+                                commitMessage: "Fix parser bug",
+                                severity: "definite",
+                            },
+                        ],
+                    ],
+                ]),
+            onDidChangeConflictStatus: createMockEvent<void>(),
+        };
+
+        const provider = new ConflictTreeDataProvider(trackerStub as never);
+        const root = await provider.getChildren();
+        assert.strictEqual(root.length, 1);
+        assert.strictEqual(root[0].kind, "conflict-file");
+        assert.strictEqual(String(root[0].label), "example.ts");
+
+        const children = await provider.getChildren(root[0]);
+        assert.strictEqual(children.length, 1);
+        assert.strictEqual(children[0].kind, "conflict-source");
+        assert.ok(String(children[0].label).includes("Bob"));
+    });
+
+    test("UserTree should group patches by user then repo/branch", async () => {
         const apiClientStub = {
-            getConnectionIssue: () => undefined,
+            getPatches: async () => [
+                {
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    userName: "Bob",
+                    upstreamBranch: "origin/main",
+                    repositoryFilePath: "src/a.ts",
+                    baseCommit: "abc123",
+                    patch: "diff --git a/src/a.ts b/src/a.ts\n...",
+                    timestamp: new Date("2026-03-10T10:00:00.000Z"),
+                    changeType: "pending",
+                    commitShortSha: "abc123",
+                    commitMessage: "Refactor parser",
+                },
+                {
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    userName: "Bob",
+                    upstreamBranch: "origin/main",
+                    repositoryFilePath: "src/b.ts",
+                    baseCommit: "abc123",
+                    patch: "diff --git a/src/b.ts b/src/b.ts\n...",
+                    timestamp: new Date("2026-03-10T10:01:00.000Z"),
+                    changeType: "working",
+                    workingState: "staged",
+                },
+                {
+                    repositoryRemoteUrl: "https://github.com/org/repo.git",
+                    userName: "Alice",
+                    upstreamBranch: "origin/main",
+                    repositoryFilePath: "src/self.ts",
+                    baseCommit: "abc123",
+                    patch: "diff --git a/src/self.ts b/src/self.ts\n...",
+                    timestamp: new Date("2026-03-10T10:02:00.000Z"),
+                    changeType: "working",
+                    workingState: "unstaged",
+                },
+            ],
+            onDidChangeData: createMockEvent<void>(),
+        };
+
+        const trackerStub = {
+            getCurrentUserName: async () => "Alice",
+            getCurrentRepositoryRemoteUrl: async () => "https://github.com/org/repo.git",
+            onDidChangeConflictStatus: createMockEvent<void>(),
+        };
+
+        const provider = new UserTreeDataProvider(apiClientStub as never, trackerStub as never);
+
+        const userRoots = await provider.getChildren();
+        assert.strictEqual(userRoots.length, 1, "Current user entries should be filtered out");
+        assert.strictEqual(String(userRoots[0].label), "Bob");
+
+        const repoGroups = await provider.getChildren(userRoots[0]);
+        assert.strictEqual(repoGroups.length, 1);
+        assert.ok(String(repoGroups[0].label).includes("repo / origin/main"));
+
+        const patchLeaves = await provider.getChildren(repoGroups[0]);
+        assert.strictEqual(patchLeaves.length, 2);
+        assert.ok(patchLeaves.some((item) => String(item.label).includes("Refactor parser")));
+    });
+
+    test("FileTree should show repository placeholders when API has active files but git list is empty", async () => {
+        const apiClientStub = {
             getFiles: async () => [
                 {
                     repositoryRemoteUrl: "https://github.com/org/repo.git",
@@ -58,142 +174,20 @@ suite("FileTreeDataProvider Test Suite", () => {
                             repositoryFileName: "example.ts",
                             activeUsers: ["Alice"],
                             patches: [],
-                            lastActivity: new Date("2026-03-08T12:00:00.000Z").toISOString(),
+                            lastActivity: new Date("2026-03-10T10:00:00.000Z").toISOString(),
                         },
                     ],
                 },
             ],
             onDidChangeData: createMockEvent<void>(),
-        } as const;
-
-        const trackerStub = {
-            getProjectFileConflicts: (repositoryFilePath: string) => {
-                const conflictMap = new Map([
-                    [
-                        "src/example.ts",
-                        [
-                            {
-                                repositoryFilePath: "src/example.ts",
-                                repositoryRemoteUrl: "https://github.com/org/repo.git",
-                                userName: "Alice",
-                                baseCommit: "abc123",
-                                patch: "mock unified diff",
-                                timestamp: new Date().toISOString(),
-                            },
-                        ],
-                    ],
-                ]);
-                return conflictMap.get(repositoryFilePath);
-            },
-            onDidChangeConflictStatus: createMockEvent<void>(),
         };
 
-        const provider = new FileTreeDataProvider(apiClientStub as never, trackerStub as never);
-        const rootItems = await provider.getChildren();
-        const repositoryItem = rootItems.find((item) => item.kind === "repository");
-        assert.ok(repositoryItem, "Expected repository node");
-
-        const repositoryChildren = await provider.getChildren(repositoryItem);
-        assert.strictEqual(repositoryChildren.length, 1, "Expected one file node");
-        assert.strictEqual(repositoryChildren[0].label, "example.ts");
-        assert.strictEqual((repositoryChildren[0].iconPath as vscode.ThemeIcon).id, "warning");
-    });
-
-    test("Root should include connection and identity status section when tracker is available", async () => {
-        const apiClientStub = {
-            getConnectionIssue: () => undefined,
-            getFiles: async () => [],
-            onDidChangeData: createMockEvent<void>(),
-        } as const;
-
-        const trackerStub = {
-            getCurrentUserName: async () => "Alice",
-            isActivelySharingActivity: async () => true,
-            getCurrentRemoteConflictAvailabilityIssue: async () =>
-                "Remote conflict checks unavailable: repository is in detached HEAD state (no tracking branch).",
-            onDidChangeConflictStatus: createMockEvent<void>(),
+        const provider = new FileTreeDataProvider(apiClientStub as never, undefined, undefined);
+        (provider as unknown as { gitContext: { getRepositories: () => Promise<unknown[]> } }).gitContext = {
+            getRepositories: async () => [],
         };
 
-        const provider = new FileTreeDataProvider(apiClientStub as never, trackerStub as never);
-        const rootItems = await provider.getChildren();
-        const statusGroup = rootItems.find((item) => item.kind === "status-group");
-        assert.ok(statusGroup, "Expected status section root item");
-
-        const statusItems = await provider.getChildren(statusGroup);
-        assert.ok(statusItems.some((item) => item.label === "Connection: Connected"));
-        assert.ok(statusItems.some((item) => item.label === "Current User: Alice"));
-        assert.ok(
-            statusItems.some(
-                (item) =>
-                    item.label ===
-                    "Remote conflict checks unavailable: repository is in detached HEAD state (no tracking branch).",
-            ),
-        );
-    });
-
-    test("File node should keep patch rows visible when remote conflicts exist", async () => {
-        const apiClientStub = {
-            getConnectionIssue: () => undefined,
-            getFiles: async () => [
-                {
-                    repositoryRemoteUrl: "https://github.com/org/repo.git",
-                    repositoryName: "repo",
-                    fileCount: 1,
-                    files: [
-                        {
-                            repositoryRemoteUrl: "https://github.com/org/repo.git",
-                            repositoryFilePath: "src/example.ts",
-                            repositoryFileName: "example.ts",
-                            activeUsers: ["Alice"],
-                            patches: [
-                                {
-                                    repositoryRemoteUrl: "https://github.com/org/repo.git",
-                                    userName: "Bob",
-                                    repositoryFilePath: "src/example.ts",
-                                    baseCommit: "base1234",
-                                    patch: "diff --git a/src/example.ts b/src/example.ts\\n...",
-                                    timestamp: new Date("2026-03-08T12:00:00.000Z").toISOString(),
-                                },
-                            ],
-                            lastActivity: new Date("2026-03-08T12:00:00.000Z").toISOString(),
-                        },
-                    ],
-                },
-            ],
-            onDidChangeData: createMockEvent<void>(),
-        } as const;
-
-        const trackerStub = {
-            getProjectFileConflicts: (repositoryFilePath: string) => {
-                if (repositoryFilePath !== "src/example.ts") {
-                    return undefined;
-                }
-
-                return [
-                    {
-                        repositoryRemoteUrl: "https://github.com/org/repo.git",
-                        userName: "origin/main",
-                        repositoryFilePath: "src/example.ts",
-                        baseCommit: "remote999",
-                        patch: "diff --git a/src/example.ts b/src/example.ts\\n...",
-                        timestamp: new Date("2026-03-08T12:01:00.000Z"),
-                        committed: true,
-                    },
-                ];
-            },
-            onDidChangeConflictStatus: createMockEvent<void>(),
-        };
-
-        const provider = new FileTreeDataProvider(apiClientStub as never, trackerStub as never);
-        const rootItems = await provider.getChildren();
-        const repositoryItem = rootItems.find((item) => item.kind === "repository");
-        assert.ok(repositoryItem, "Expected repository node");
-
-        const repositoryChildren = await provider.getChildren(repositoryItem);
-        assert.strictEqual(repositoryChildren.length, 1, "Expected one file node");
-
-        const fileChildren = await provider.getChildren(repositoryChildren[0]);
-        const patchRows = fileChildren.filter((item) => item.kind === "patch");
-        assert.strictEqual(patchRows.length, 2, "Expected both remote conflict and patch rows to be visible");
+        const root = await provider.getChildren();
+        assert.strictEqual(root.length, 0, "No git repositories should produce no repository nodes");
     });
 });
