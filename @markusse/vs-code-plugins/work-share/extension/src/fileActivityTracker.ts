@@ -255,18 +255,28 @@ export class FileActivityTracker {
                 repositoryRemoteUrl,
                 userName,
             );
+            const repository = await this.gitContext.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
+            const pendingCommitPatches =
+                repository ?
+                    await this.patchSharingService.buildPendingCommitPatchesForResolvedRepository(
+                        repository,
+                        repositoryRemoteUrl,
+                        userName,
+                    )
+                :   [];
+            const synchronizedPatches = [...pendingCommitPatches, ...activePatches];
 
             await this.apiClient.syncRepositoryUserPatches({
                 repositoryRemoteUrl,
                 userName,
-                patches: activePatches,
+                patches: synchronizedPatches,
             });
 
             this.lastPatchSyncAtByRepositoryRemoteUrl.set(repositoryRemoteUrl, now);
             this.logger?.info("Patch sync completed for repository.", {
                 repositoryRemoteUrl,
                 userName,
-                synchronizedPatchCount: activePatches.length,
+                synchronizedPatchCount: synchronizedPatches.length,
             });
             return true;
         } catch (error) {
@@ -388,10 +398,16 @@ export class FileActivityTracker {
                 repositoryRemoteUrl,
                 userName,
             );
+            const pendingCommitPatches = await this.patchSharingService.buildPendingCommitPatchesForResolvedRepository(
+                repository,
+                repositoryRemoteUrl,
+                userName,
+            );
+            const synchronizedPatches = [...pendingCommitPatches, ...activePatches];
             await this.apiClient.syncRepositoryUserPatches({
                 repositoryRemoteUrl,
                 userName,
-                patches: activePatches,
+                patches: synchronizedPatches,
             });
 
             this.lastPatchSyncAtByRepositoryRemoteUrl.set(repositoryRemoteUrl, Date.now());
@@ -399,7 +415,7 @@ export class FileActivityTracker {
             this.logger?.info("Repository patch sync completed.", {
                 repositoryRootPath,
                 repositoryRemoteUrl,
-                synchronizedPatchCount: activePatches.length,
+                synchronizedPatchCount: synchronizedPatches.length,
             });
         } catch (error) {
             this.logger?.warn("Repository patch sync failed.", {

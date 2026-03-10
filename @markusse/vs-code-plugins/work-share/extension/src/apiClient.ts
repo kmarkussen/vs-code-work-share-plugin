@@ -271,6 +271,12 @@ export class ApiClient {
                 baseCommit: patch.baseCommit,
                 patch: patch.patch,
                 timestamp: patch.timestamp.toISOString(),
+                changeType: patch.changeType,
+                workingState: patch.workingState,
+                commitSha: patch.commitSha,
+                commitShortSha: patch.commitShortSha,
+                commitMessage: patch.commitMessage,
+                contentHash: patch.contentHash,
             });
             this.markConnectionHealthy();
             this.logger?.info("POST /patches succeeded.", {
@@ -327,6 +333,12 @@ export class ApiClient {
                     patch: patch.patch,
                     timestamp: patch.timestamp.toISOString(),
                     committed: patch.committed,
+                    changeType: patch.changeType,
+                    workingState: patch.workingState,
+                    commitSha: patch.commitSha,
+                    commitShortSha: patch.commitShortSha,
+                    commitMessage: patch.commitMessage,
+                    contentHash: patch.contentHash,
                 })),
             });
 

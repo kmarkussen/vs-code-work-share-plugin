@@ -23,6 +23,48 @@ export class PatchSharingService {
     ) {}
 
     /**
+     * Extracts the primary repository-relative file path from a unified diff.
+     * Pending commit patches can span many files; this chooses a stable first path for indexing.
+     */
+    private extractPrimaryRepositoryFilePathFromPatch(patchText: string): string | undefined {
+        const match = patchText.match(/^diff --git a\/(.+?) b\/(.+)$/m);
+        if (!match) {
+            return undefined;
+        }
+
+        return match[2]?.trim() || match[1]?.trim() || undefined;
+    }
+
+    /**
+     * Resolves commits that are ahead of the configured upstream branch, oldest first.
+     */
+    private async resolvePendingCommitShas(repository: GitRepository): Promise<string[]> {
+        const upstream = repository.state?.HEAD?.upstream;
+        if (!upstream?.remote || !upstream.name) {
+            return [];
+        }
+
+        const upstreamRef = `${upstream.remote}/${upstream.name}`;
+        const result = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+            "rev-list",
+            "--reverse",
+            `${upstreamRef}..HEAD`,
+        ]);
+        if (result.exitCode !== 0) {
+            this.logger?.warn("Pending commit collection skipped: unable to list commits ahead of upstream.", {
+                repositoryRootPath: repository.rootUri.fsPath,
+                stderr: result.stderr,
+            });
+            return [];
+        }
+
+        return result.stdout
+            .split(/\r?\n/)
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0);
+    }
+
+    /**
      * Resolves the current HEAD commit hash, preferring Git API state and falling back to CLI.
      */
     private async resolveBaseCommit(repository: GitRepository): Promise<string | undefined> {
@@ -96,7 +138,6 @@ export class PatchSharingService {
         repositoryRemoteUrl: string,
         userName: string,
     ): Promise<SharedPatch[]> {
-
         const repositoryRootPath = repository.rootUri.fsPath;
         const baseCommit = await this.resolveBaseCommit(repository);
         if (!baseCommit) {
@@ -119,6 +160,12 @@ export class PatchSharingService {
                 continue;
             }
 
+            const patchDigest = createHash("sha256")
+                .update(baseCommit)
+                .update("\n")
+                .update(patchResult.stdout)
+                .digest("hex");
+
             activePatches.push({
                 repositoryRemoteUrl,
                 userName,
@@ -126,14 +173,11 @@ export class PatchSharingService {
                 baseCommit,
                 patch: patchResult.stdout,
                 timestamp: new Date(),
+                changeType: "working",
+                contentHash: patchDigest,
             });
 
             const absoluteFilePath = `${repositoryRootPath}/${repositoryFilePath}`.replace(/\\/g, "/");
-            const patchDigest = createHash("sha256")
-                .update(baseCommit)
-                .update("\n")
-                .update(patchResult.stdout)
-                .digest("hex");
             this.lastSharedPatchDigestByFile.set(absoluteFilePath, patchDigest);
         }
 
@@ -144,6 +188,77 @@ export class PatchSharingService {
         });
 
         return activePatches;
+    }
+
+    /**
+     * Builds one patch per local commit that is ahead of upstream (`upstream..HEAD`).
+     */
+    public async buildPendingCommitPatchesForResolvedRepository(
+        repository: GitRepository,
+        repositoryRemoteUrl: string,
+        userName: string,
+    ): Promise<SharedPatch[]> {
+        const commitShas = await this.resolvePendingCommitShas(repository);
+        if (commitShas.length === 0) {
+            return [];
+        }
+
+        const pendingPatches: SharedPatch[] = [];
+        for (const commitSha of commitShas) {
+            const metadataResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+                "show",
+                "-s",
+                "--format=%H%x09%h%x09%s",
+                commitSha,
+            ]);
+            if (metadataResult.exitCode !== 0) {
+                continue;
+            }
+
+            const [fullSha, shortSha, ...messageParts] = metadataResult.stdout.trim().split("\t");
+            const commitMessage = messageParts.join("\t").trim();
+
+            const patchResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+                "show",
+                "--binary",
+                "--full-index",
+                "--format=",
+                fullSha || commitSha,
+            ]);
+            if (patchResult.exitCode !== 0 || !patchResult.stdout.trim()) {
+                continue;
+            }
+
+            const repositoryFilePath =
+                this.extractPrimaryRepositoryFilePathFromPatch(patchResult.stdout) || `commit/${shortSha || fullSha}`;
+            const contentHash = createHash("sha256")
+                .update(fullSha || commitSha)
+                .update("\n")
+                .update(patchResult.stdout)
+                .digest("hex");
+
+            pendingPatches.push({
+                repositoryRemoteUrl,
+                userName,
+                repositoryFilePath,
+                baseCommit: fullSha || commitSha,
+                patch: patchResult.stdout,
+                timestamp: new Date(),
+                changeType: "pending",
+                commitSha: fullSha || commitSha,
+                commitShortSha: shortSha || (fullSha || commitSha).slice(0, 8),
+                commitMessage,
+                contentHash,
+            });
+        }
+
+        this.logger?.info("Pending commit patch set built.", {
+            repositoryRemoteUrl,
+            userName,
+            pendingPatchCount: pendingPatches.length,
+        });
+
+        return pendingPatches;
     }
 
     /**
@@ -233,6 +348,8 @@ export class PatchSharingService {
             baseCommit,
             patch: patchText,
             timestamp: new Date(),
+            changeType: "working",
+            contentHash: patchDigest,
         });
     }
 }
