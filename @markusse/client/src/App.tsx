@@ -14,6 +14,7 @@ import {
     IconButton,
     Link,
     List,
+    ListItemIcon,
     ListItemButton,
     ListItemText,
     Paper,
@@ -25,14 +26,17 @@ import {
 } from "@mui/material";
 import {
     ArrowOutward as ArrowOutwardIcon,
+    Article as ArticleIcon,
     CheckCircleOutline as CheckCircleOutlineIcon,
     Close as CloseIcon,
+    DashboardCustomize as DashboardCustomizeIcon,
     Difference as DifferenceIcon,
     Download as DownloadIcon,
     Fullscreen as FullscreenIcon,
     Hub as HubIcon,
     Insights as InsightsIcon,
     Lan as LanIcon,
+    Menu as MenuIcon,
     PersonSearch as PersonSearchIcon,
     Share as ShareIcon,
 } from "@mui/icons-material";
@@ -75,6 +79,12 @@ const CAPABILITY_CALLOUTS = [
         icon: LanIcon,
     },
 ];
+
+interface NavigationEntry {
+    label: string;
+    href: string;
+    icon: React.ElementType;
+}
 
 interface VsixInfo {
     available: boolean;
@@ -134,6 +144,7 @@ function App() {
     const [selectedPatchId, setSelectedPatchId] = useState<string | null>(null);
     const [isDiffDrawerOpen, setIsDiffDrawerOpen] = useState(false);
     const [isFullscreenDiffOpen, setIsFullscreenDiffOpen] = useState(false);
+    const [isNavigationDrawerOpen, setIsNavigationDrawerOpen] = useState(false);
 
     useEffect(() => {
         void loadData();
@@ -224,12 +235,81 @@ function App() {
         setIsDiffDrawerOpen(true);
     };
 
+    const coreNavigationEntries: NavigationEntry[] = [
+        {
+            label: "Product site",
+            href: "/",
+            icon: ArticleIcon,
+        },
+        {
+            label: "Operations workspace",
+            href: "/dashboard",
+            icon: DashboardCustomizeIcon,
+        },
+        {
+            label: "Download VSIX",
+            href: "/downloads/work-share.vsix",
+            icon: DownloadIcon,
+        },
+    ];
+
+    const landingSections: NavigationEntry[] = [
+        {
+            label: "Install guide",
+            href: "#install-guide",
+            icon: CheckCircleOutlineIcon,
+        },
+        {
+            label: "Capabilities",
+            href: "#capabilities",
+            icon: HubIcon,
+        },
+        {
+            label: "Live preview",
+            href: "#live-preview",
+            icon: InsightsIcon,
+        },
+    ];
+
+    const dashboardSections: NavigationEntry[] = [
+        {
+            label: "Repository tree",
+            href: "#repository-tree",
+            icon: LanIcon,
+        },
+        {
+            label: "People focus",
+            href: "#people-focus",
+            icon: PersonSearchIcon,
+        },
+        {
+            label: "Activity log",
+            href: "#activity-log",
+            icon: InsightsIcon,
+        },
+        {
+            label: "Patch stream",
+            href: "#patch-stream",
+            icon: DifferenceIcon,
+        },
+    ];
+
+    const sectionEntries = isDashboardRoute ? dashboardSections : landingSections;
+
     return (
         <ThemeProvider theme={theme}>
             <CssBaseline />
             <Box className='app-shell'>
                 <Box component='header' className='topbar'>
                     <Toolbar className='topbar-inner'>
+                        <IconButton
+                            color='inherit'
+                            edge='start'
+                            aria-label='Open navigation'
+                            onClick={() => setIsNavigationDrawerOpen(true)}
+                            sx={{ mr: 1.5 }}>
+                            <MenuIcon />
+                        </IconButton>
                         <ShareIcon sx={{ mr: 2 }} />
                         <Typography variant='h6' component='div' sx={{ flexGrow: 1 }}>
                             Work Share
@@ -244,6 +324,68 @@ function App() {
                         }
                     </Toolbar>
                 </Box>
+
+                <Drawer anchor='left' open={isNavigationDrawerOpen} onClose={() => setIsNavigationDrawerOpen(false)}>
+                    <Box className='navigation-drawer'>
+                        <Box className='navigation-drawer-header'>
+                            <Typography variant='h6'>Navigate</Typography>
+                            <IconButton onClick={() => setIsNavigationDrawerOpen(false)} aria-label='Close navigation'>
+                                <CloseIcon />
+                            </IconButton>
+                        </Box>
+                        <Divider />
+
+                        <Box className='navigation-section'>
+                            <Typography variant='overline' color='text.secondary'>
+                                Pages
+                            </Typography>
+                            <List disablePadding>
+                                {coreNavigationEntries.map((entry) => {
+                                    const Icon = entry.icon;
+                                    return (
+                                        <ListItemButton
+                                            key={entry.label}
+                                            component='a'
+                                            href={entry.href}
+                                            onClick={() => setIsNavigationDrawerOpen(false)}
+                                            className='navigation-item'>
+                                            <ListItemIcon>
+                                                <Icon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText primary={entry.label} />
+                                        </ListItemButton>
+                                    );
+                                })}
+                            </List>
+                        </Box>
+
+                        <Divider />
+
+                        <Box className='navigation-section'>
+                            <Typography variant='overline' color='text.secondary'>
+                                {isDashboardRoute ? "Workspace sections" : "Product sections"}
+                            </Typography>
+                            <List disablePadding>
+                                {sectionEntries.map((entry) => {
+                                    const Icon = entry.icon;
+                                    return (
+                                        <ListItemButton
+                                            key={entry.label}
+                                            component='a'
+                                            href={entry.href}
+                                            onClick={() => setIsNavigationDrawerOpen(false)}
+                                            className='navigation-item'>
+                                            <ListItemIcon>
+                                                <Icon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText primary={entry.label} />
+                                        </ListItemButton>
+                                    );
+                                })}
+                            </List>
+                        </Box>
+                    </Box>
+                </Drawer>
 
                 <Container maxWidth='xl' sx={{ mt: 4, mb: 6, flex: 1 }}>
                     {isDashboardRoute ?
@@ -389,7 +531,7 @@ function LandingPage({
                         </Stack>
                     </Box>
 
-                    <Paper className='install-card' elevation={0}>
+                    <Paper id='install-guide' className='install-card' elevation={0}>
                         <Typography variant='overline' color='secondary.main'>
                             Install and deploy
                         </Typography>
@@ -424,7 +566,7 @@ function LandingPage({
                 </Box>
             </Paper>
 
-            <Box className='callout-grid'>
+            <Box id='capabilities' className='callout-grid'>
                 {CAPABILITY_CALLOUTS.map((callout) => {
                     const Icon = callout.icon;
                     return (
@@ -441,7 +583,7 @@ function LandingPage({
                 })}
             </Box>
 
-            <Box className='dashboard-preview-grid'>
+            <Box id='live-preview' className='dashboard-preview-grid'>
                 <Paper className='workspace-panel' elevation={0}>
                     <SectionHeader
                         title='Team focus snapshot'
@@ -546,7 +688,7 @@ function DashboardPage({
             </Paper>
 
             <Box className='ops-layout'>
-                <Paper className='workspace-panel explorer-panel' elevation={0}>
+                <Paper id='repository-tree' className='workspace-panel explorer-panel' elevation={0}>
                     <SectionHeader
                         title='Repository tree'
                         detail='Browse active files and open their latest shared patch directly in the diff sidebar.'
@@ -603,7 +745,7 @@ function DashboardPage({
                 </Paper>
 
                 <Box className='workspace-column'>
-                    <Paper className='workspace-panel' elevation={0}>
+                    <Paper id='people-focus' className='workspace-panel' elevation={0}>
                         <SectionHeader
                             title='Who is working on what'
                             detail='People-centric summaries built from activity and patch streams.'
@@ -631,7 +773,7 @@ function DashboardPage({
                         </Box>
                     </Paper>
 
-                    <Paper className='workspace-panel' elevation={0}>
+                    <Paper id='activity-log' className='workspace-panel' elevation={0}>
                         <SectionHeader
                             title='Activity log'
                             detail='Recent updates across file activity, patch sharing, and repository motion.'
@@ -667,7 +809,7 @@ function DashboardPage({
                     </Paper>
                 </Box>
 
-                <Paper className='workspace-panel highlights-panel' elevation={0}>
+                <Paper id='patch-stream' className='workspace-panel highlights-panel' elevation={0}>
                     <SectionHeader
                         title='Patch stream'
                         detail='Choose a patch to open it in the review sidebar or fullscreen diff mode.'
@@ -746,6 +888,10 @@ function DiffContent({ patch, fullscreen = false }: { patch: Patch | null; fulls
         );
     }
 
+    const parsedLines = useMemo(() => parseUnifiedDiff(patch.patch), [patch.patch]);
+    const addedLines = parsedLines.filter((line) => line.kind === "add").length;
+    const removedLines = parsedLines.filter((line) => line.kind === "remove").length;
+
     return (
         <Box className={fullscreen ? "diff-surface fullscreen" : "diff-surface"}>
             <Box className='diff-meta'>
@@ -753,13 +899,114 @@ function DiffContent({ patch, fullscreen = false }: { patch: Patch | null; fulls
                 {patch.workingState && <Chip size='small' label={patch.workingState} color='secondary' />}
                 <Chip size='small' label={patch.commitShortSha ?? patch.baseCommit.slice(0, 8)} />
                 {patch.upstreamBranch && <Chip size='small' label={patch.upstreamBranch} />}
+                <Chip size='small' label={`+${addedLines}`} color='success' />
+                <Chip size='small' label={`-${removedLines}`} color='error' />
             </Box>
             <Typography variant='body2' color='text.secondary' sx={{ mt: 2, mb: 2 }}>
                 {patch.commitMessage || `Patch for ${extractFileName(patch.repositoryFilePath)}`}
             </Typography>
-            <pre className='diff-pre'>{patch.patch}</pre>
+            <Box className='diff-pre diff-grid' role='table' aria-label='Patch diff'>
+                {parsedLines.map((line, index) => (
+                    <Box key={`diff-line-${index}`} className={`diff-row diff-row-${line.kind}`} role='row'>
+                        <Box className='diff-line-number' role='cell'>
+                            {line.oldLineNumber ?? ""}
+                        </Box>
+                        <Box className='diff-line-number' role='cell'>
+                            {line.newLineNumber ?? ""}
+                        </Box>
+                        <Box className='diff-line-content' role='cell'>
+                            {line.content || " "}
+                        </Box>
+                    </Box>
+                ))}
+            </Box>
         </Box>
     );
+}
+
+type ParsedDiffLineKind = "meta" | "hunk" | "add" | "remove" | "context";
+
+interface ParsedDiffLine {
+    content: string;
+    kind: ParsedDiffLineKind;
+    oldLineNumber: number | null;
+    newLineNumber: number | null;
+}
+
+function parseUnifiedDiff(patchText: string): ParsedDiffLine[] {
+    const lines = patchText.split("\n");
+    const parsed: ParsedDiffLine[] = [];
+    let oldLineNumber = 0;
+    let newLineNumber = 0;
+
+    for (const line of lines) {
+        if (line.startsWith("@@")) {
+            const match = line.match(/^@@\s*-(\d+)(?:,\d+)?\s*\+(\d+)(?:,\d+)?\s*@@/);
+            if (match) {
+                oldLineNumber = Number(match[1]);
+                newLineNumber = Number(match[2]);
+            }
+
+            parsed.push({
+                content: line,
+                kind: "hunk",
+                oldLineNumber: null,
+                newLineNumber: null,
+            });
+            continue;
+        }
+
+        if (
+            line.startsWith("diff --git") ||
+            line.startsWith("index ") ||
+            line.startsWith("---") ||
+            line.startsWith("+++")
+        ) {
+            parsed.push({
+                content: line,
+                kind: "meta",
+                oldLineNumber: null,
+                newLineNumber: null,
+            });
+            continue;
+        }
+
+        if (line.startsWith("+") && !line.startsWith("+++")) {
+            parsed.push({
+                content: line,
+                kind: "add",
+                oldLineNumber: null,
+                newLineNumber,
+            });
+            newLineNumber += 1;
+            continue;
+        }
+
+        if (line.startsWith("-") && !line.startsWith("---")) {
+            parsed.push({
+                content: line,
+                kind: "remove",
+                oldLineNumber,
+                newLineNumber: null,
+            });
+            oldLineNumber += 1;
+            continue;
+        }
+
+        const hasLineNumberContext = oldLineNumber > 0 || newLineNumber > 0;
+        parsed.push({
+            content: line,
+            kind: "context",
+            oldLineNumber: hasLineNumberContext ? oldLineNumber : null,
+            newLineNumber: hasLineNumberContext ? newLineNumber : null,
+        });
+        if (hasLineNumberContext) {
+            oldLineNumber += 1;
+            newLineNumber += 1;
+        }
+    }
+
+    return parsed;
 }
 
 export default App;

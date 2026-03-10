@@ -51,6 +51,34 @@ a {
   width: 100%;
 }
 
+.navigation-drawer {
+  width: min(360px, 92vw);
+  height: 100%;
+  background: #fff7eb;
+  display: flex;
+  flex-direction: column;
+}
+
+.navigation-drawer-header {
+  padding: 16px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.navigation-section {
+  padding: 14px 12px;
+}
+
+.navigation-item {
+  border-radius: 14px;
+  margin: 4px 0;
+}
+
+.navigation-item:hover {
+  background: rgba(12, 122, 107, 0.1);
+}
+
 .hero-shell,
 .workspace-panel,
 .ops-hero,
@@ -210,6 +238,54 @@ a {
   font: 500 13px/1.55 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.diff-grid {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  white-space: pre;
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 72px 72px minmax(0, 1fr);
+  align-items: baseline;
+  border-bottom: 1px solid rgba(237, 247, 242, 0.06);
+}
+
+.diff-row:last-child {
+  border-bottom: 0;
+}
+
+.diff-line-number {
+  text-align: right;
+  padding: 3px 10px;
+  color: rgba(237, 247, 242, 0.55);
+  border-right: 1px solid rgba(237, 247, 242, 0.08);
+}
+
+.diff-line-content {
+  padding: 3px 12px;
+  overflow-x: auto;
+}
+
+.diff-row-add {
+  background: rgba(62, 190, 128, 0.16);
+}
+
+.diff-row-remove {
+  background: rgba(220, 95, 95, 0.16);
+}
+
+.diff-row-hunk {
+  background: rgba(80, 130, 240, 0.24);
+  color: #d6e3ff;
+}
+
+.diff-row-meta {
+  background: rgba(220, 220, 220, 0.08);
+  color: rgba(237, 247, 242, 0.75);
 }
 
 .empty-diff-state {
