@@ -6,14 +6,15 @@ import { ApiClient } from "./apiClient";
 import { SharedPatch } from "./sharedPatch";
 import { OutputLogger } from "./outputLogger";
 import { isGitInternalPath } from "./fileActivity/pathUtils";
-import { ConflictStatus, FileActivity } from "./fileActivity/types";
+import { ConflictSeverity, ConflictStatus, FileActivity } from "./fileActivity/types";
+import { escalateSeverity, patchHunksNearby } from "./fileActivity/conflictStatus";
 import { GitContextService } from "./fileActivity/gitContext";
 import { UserIdentityService } from "./fileActivity/identityService";
 import { PatchSharingService } from "./fileActivity/patchSharingService";
 import { GitRepository } from "./fileActivity/gitTypes";
 
 export { isGitInternalPath } from "./fileActivity/pathUtils";
-export type { ConflictStatus, FileActivity } from "./fileActivity/types";
+export type { ConflictSeverity, ConflictStatus, FileActivity } from "./fileActivity/types";
 
 /**
  * Tracks editor file events and reports repository-scoped activity to the server.
@@ -878,6 +879,24 @@ export class FileActivityTracker {
     }
 
     /**
+     * Returns the highest conflict severity for a repository-relative file from the master list.
+     * Returns `"none"` when the file is clean or has no entry yet.
+     * Used by the tree view to render severity icons.
+     */
+    public getHighestConflictSeverityForFile(repositoryFilePath: string): ConflictSeverity {
+        const conflicts = this.projectFileConflicts.get(repositoryFilePath);
+        if (!conflicts || conflicts.length === 0) {
+            return "none";
+        }
+
+        let severity: ConflictSeverity = "none";
+        for (const patch of conflicts) {
+            severity = escalateSeverity(severity, patch.severity ?? "definite");
+        }
+        return severity;
+    }
+
+    /**
      * Returns remote conflict availability issue for the current editor context, if present.
      */
     public async getCurrentRemoteConflictAvailabilityIssue(): Promise<string | undefined> {
@@ -1060,8 +1079,8 @@ export class FileActivityTracker {
             }
             await fs.writeFile(upstreamFile, upstreamContent, "utf8");
 
-            // Run git merge-file to detect conflicts
-            // Exit code: 0 = no conflicts, 1 = conflicts detected
+            // === Step 1: Working-tree check ===
+            // Does the full local state (pending commits + working changes) conflict with upstream?
             const mergeFileResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
                 "merge-file",
                 "-p",
@@ -1069,19 +1088,78 @@ export class FileActivityTracker {
                 baseFile,
                 upstreamFile,
             ]);
+            const workingTreeConflicts = mergeFileResult.exitCode > 0;
 
-            const hasConflicts = mergeFileResult.exitCode > 0;
+            // === Step 2: Rebase simulation — pending commits only ===
+            // Does committed HEAD (without working changes) conflict when rebased onto the remote-ahead state?
+            let pendingCommitsConflict = false;
+            const committedHeadContent = await this.readGitFileContent(
+                repository.rootUri.fsPath,
+                "HEAD",
+                repositoryFilePath,
+            );
+            if (committedHeadContent !== undefined) {
+                const committedHeadFile = path.join(tempDirectory, "head-committed");
+                await fs.writeFile(committedHeadFile, committedHeadContent, "utf8");
+                const pendingRebaseResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+                    "merge-file",
+                    "-p",
+                    committedHeadFile,
+                    baseFile,
+                    upstreamFile,
+                ]);
+                pendingCommitsConflict = pendingRebaseResult.exitCode > 0;
+            }
+
+            // === Step 3: Proximity heuristics for "likely" severity ===
+            // Checks if local pending commits and/or working changes touch lines near the remote-ahead hunks,
+            // even when the 3-way merge succeeds without conflict markers.
+            // Both the pending diff and the upstream diff are relative to merge-base, so the comparison is accurate.
+            let severity: ConflictSeverity = "none";
+            if (workingTreeConflicts || pendingCommitsConflict) {
+                severity = "definite";
+            } else {
+                const localPendingDiffResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+                    "diff",
+                    mergeBase,
+                    "HEAD",
+                    "--",
+                    repositoryFilePath,
+                ]);
+                if (
+                    localPendingDiffResult.stdout.trim() &&
+                    patchHunksNearby(upstreamDiffPatch, localPendingDiffResult.stdout)
+                ) {
+                    severity = "likely";
+                }
+
+                if (severity === "none") {
+                    const workingDiffResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+                        "diff",
+                        "HEAD",
+                        "--",
+                        repositoryFilePath,
+                    ]);
+                    if (
+                        workingDiffResult.stdout.trim() &&
+                        patchHunksNearby(upstreamDiffPatch, workingDiffResult.stdout)
+                    ) {
+                        severity = "likely";
+                    }
+                }
+            }
 
             this.logger?.info("Remote conflict check completed for active file.", {
                 filePath,
                 repositoryFilePath,
                 upstreamRef,
-                conflictDetected: hasConflicts,
+                conflictDetected: severity !== "none",
+                severity,
                 mergeFileExitCode: mergeFileResult.exitCode,
             });
 
-            if (hasConflicts) {
-                // Create SharedPatch entry for remote conflict with committed flag
+            if (severity !== "none") {
+                // Create SharedPatch entry for remote conflict with severity annotation.
                 const repositoryRemoteUrl = await this.gitContext.getRepositoryRemoteUrl(filePath);
 
                 return {
@@ -1092,6 +1170,7 @@ export class FileActivityTracker {
                     patch: upstreamDiffPatch,
                     timestamp: new Date(),
                     committed: true,
+                    severity,
                 };
             }
 
@@ -1167,13 +1246,21 @@ export class FileActivityTracker {
     }
 
     /**
-     * Checks whether an incoming patch conflicts with the current local working tree.
+     * Evaluates the conflict severity between an incoming peer patch and the current local working tree.
+     *
+     * Severity levels:
+     * - `"definite"`: dry-run 3-way apply fails — actual merge conflict would occur.
+     * - `"likely"`: apply succeeds but the patch's hunk ranges are near local uncommitted changes.
+     * - `"none"`: no overlap detected.
      */
-    private async doesIncomingPatchConflict(repositoryRootPath: string, patch: SharedPatch): Promise<boolean> {
+    private async evaluatePatchConflictSeverity(
+        repositoryRootPath: string,
+        patch: SharedPatch,
+    ): Promise<ConflictSeverity> {
         const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "work-share-patch-"));
         const patchFilePath = path.join(tempDirectory, "incoming.patch");
 
-        this.logger?.info("Conflict detector: checking incoming patch.", {
+        this.logger?.info("Conflict detector: checking incoming patch severity.", {
             repositoryFilePath: patch.repositoryFilePath,
             fromUser: patch.userName,
             baseCommit: patch.baseCommit,
@@ -1182,8 +1269,7 @@ export class FileActivityTracker {
         try {
             await fs.writeFile(patchFilePath, patch.patch, "utf8");
 
-            // Run a dry-run 3-way apply against the receiver's current working tree.
-            // This reports conflicts with local edits without mutating files.
+            // Dry-run 3-way apply against the local working tree.
             const applyCheckResult = await this.gitContext.runGitCommand(repositoryRootPath, [
                 "apply",
                 "--3way",
@@ -1191,14 +1277,38 @@ export class FileActivityTracker {
                 patchFilePath,
             ]);
 
-            this.logger?.info("Conflict detector: patch check completed.", {
+            if (applyCheckResult.exitCode !== 0) {
+                this.logger?.info("Conflict detector: definite conflict — patch apply failed.", {
+                    repositoryFilePath: patch.repositoryFilePath,
+                    fromUser: patch.userName,
+                    stderr: applyCheckResult.stderr,
+                });
+                return "definite";
+            }
+
+            // Proximity check: does the incoming patch touch lines near our local uncommitted changes?
+            // Note: coordinate spaces differ (incoming patch is relative to baseCommit, local diff is
+            // relative to HEAD), so this is a heuristic rather than a precise check.
+            const localDiffResult = await this.gitContext.runGitCommand(repositoryRootPath, [
+                "diff",
+                "HEAD",
+                "--",
+                patch.repositoryFilePath,
+            ]);
+
+            if (localDiffResult.stdout.trim() && patchHunksNearby(patch.patch, localDiffResult.stdout)) {
+                this.logger?.info("Conflict detector: likely conflict — hunk proximity detected.", {
+                    repositoryFilePath: patch.repositoryFilePath,
+                    fromUser: patch.userName,
+                });
+                return "likely";
+            }
+
+            this.logger?.info("Conflict detector: no conflict detected.", {
                 repositoryFilePath: patch.repositoryFilePath,
                 fromUser: patch.userName,
-                conflictDetected: applyCheckResult.exitCode !== 0,
-                stderr: applyCheckResult.stderr,
             });
-
-            return applyCheckResult.exitCode !== 0;
+            return "none";
         } finally {
             await fs.rm(tempDirectory, { recursive: true, force: true });
         }
@@ -1250,9 +1360,9 @@ export class FileActivityTracker {
         );
 
         for (const patch of sortedPatches.slice(0, 5)) {
-            const conflicts = await this.doesIncomingPatchConflict(repository.rootUri.fsPath, patch);
-            if (conflicts) {
-                conflictingPatches.push(patch);
+            const severity = await this.evaluatePatchConflictSeverity(repository.rootUri.fsPath, patch);
+            if (severity !== "none") {
+                conflictingPatches.push({ ...patch, severity });
             }
         }
 

@@ -21,6 +21,14 @@ export interface FileActivity {
 export type ConflictStatus = "clean" | "conflict" | "unknown";
 
 /**
+ * Graduated conflict severity used by the rebase simulation engine.
+ * - `none`: no conflicting hunks detected.
+ * - `likely`: both sides modify nearby lines but merge is clean.
+ * - `definite`: 3-way merge produces actual conflict markers.
+ */
+export type ConflictSeverity = "none" | "likely" | "definite";
+
+/**
  * Standard output of a git command invocation.
  */
 export interface GitCommandResult {

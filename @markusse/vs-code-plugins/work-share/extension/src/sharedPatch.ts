@@ -1,3 +1,7 @@
+import type { ConflictSeverity } from "./fileActivity/types";
+
+export type { ConflictSeverity } from "./fileActivity/types";
+
 /**
  * Shared patch model exchanged between extension clients via server API.
  */
@@ -24,4 +28,9 @@ export interface SharedPatch {
      * When true, this patch represents conflicts from committed remote changes rather than from other users' work-in-progress patches.
      */
     committed?: boolean;
+    /**
+     * Conflict severity assigned during rebase simulation.
+     * Present only on entries stored in the projectFileConflicts master list.
+     */
+    severity?: ConflictSeverity;
 }
