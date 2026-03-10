@@ -23,6 +23,7 @@ interface StoredActivity extends ActivityDto {
 interface PatchSyncItem {
     repositoryRemoteUrl?: string;
     userName?: string;
+    upstreamBranch?: string;
     repositoryFilePath: string;
     baseCommit: string;
     patch: string;
@@ -33,7 +34,16 @@ interface PatchSyncItem {
 interface PatchSyncRequest {
     repositoryRemoteUrl?: string;
     userName?: string;
+    upstreamBranch?: string;
     patches: PatchSyncItem[];
+}
+
+/**
+ * Normalizes optional branch values so filters and grouping behave consistently.
+ */
+function normalizeUpstreamBranch(upstreamBranch: string | undefined): string | undefined {
+    const normalized = upstreamBranch?.trim();
+    return normalized ? normalized : undefined;
 }
 
 /**
@@ -53,7 +63,13 @@ function normalizeSyncTimestamp(timestamp: string | Date | undefined): string {
 
 // Keep in-memory state at module scope so it persists even if controller instances are recreated per request.
 const activityStore: Map<string, StoredActivity[]> = new Map();
-const patchStore: Map<string, StoredPatch[]> = new Map();
+
+/**
+ * Latest-state-only patch storage.
+ * Key format: `${repositoryRemoteUrl}:${branch}:${userName}:${filePath}:${changeType}:${workingState || ""}:${commitSha || ""}`
+ * Each key maps to exactly one patch (the latest submission for that composite identity).
+ */
+const patchStore: Map<string, StoredPatch> = new Map();
 
 /**
  * Validates caller identity and rejects ambiguous placeholders.
@@ -66,6 +82,18 @@ function normalizeAndValidateIdentity(userName: string): string {
     }
 
     return normalizedUserName;
+}
+
+/**
+ * Creates a composite key for latest-state-only patch storage.
+ * Includes changeType, workingState, and commitSha to distinguish patches.
+ */
+function createPatchCompositeKey(patch: StoredPatch | PatchDto): string {
+    const normalizedBranch = normalizeUpstreamBranch(patch.upstreamBranch) ?? "";
+    const changeType = (patch as any).changeType || "working";
+    const workingState = (patch as any).workingState || "";
+    const commitSha = (patch as any).commitSha || "";
+    return `${patch.repositoryRemoteUrl}:${normalizedBranch}:${patch.userName}:${patch.repositoryFilePath}:${changeType}:${workingState}:${commitSha}`;
 }
 
 /**
@@ -113,10 +141,14 @@ function pathsReferToSameFile(left: string, right: string): boolean {
 function getActiveUsersForFile(
     repositoryRemoteUrl: string,
     repositoryFilePath: string,
+    upstreamBranch: string | undefined,
     allActivities: StoredActivity[],
 ): string[] {
     const fileActivities = allActivities.filter(
-        (a) => a.repositoryRemoteUrl === repositoryRemoteUrl && a.filePath === repositoryFilePath,
+        (a) =>
+            a.repositoryRemoteUrl === repositoryRemoteUrl &&
+            a.filePath === repositoryFilePath &&
+            normalizeUpstreamBranch(a.upstreamBranch) === normalizeUpstreamBranch(upstreamBranch),
     );
 
     // Map users to their most recent action
@@ -142,10 +174,14 @@ function getActiveUsersForFile(
 function getLastActivityTimestamp(
     repositoryRemoteUrl: string,
     repositoryFilePath: string,
+    upstreamBranch: string | undefined,
     allActivities: StoredActivity[],
 ): string {
     const fileActivities = allActivities.filter(
-        (a) => a.repositoryRemoteUrl === repositoryRemoteUrl && a.filePath === repositoryFilePath,
+        (a) =>
+            a.repositoryRemoteUrl === repositoryRemoteUrl &&
+            a.filePath === repositoryFilePath &&
+            normalizeUpstreamBranch(a.upstreamBranch) === normalizeUpstreamBranch(upstreamBranch),
     );
 
     if (fileActivities.length === 0) {
@@ -165,19 +201,29 @@ export class ActivityController {
      * Only includes files that currently have active editors.
      */
     @Get("/files")
-    getFiles(@QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string): GetFilesResponse {
+    getFiles(
+        @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
+        @QueryParam("upstreamBranch") upstreamBranch?: string,
+    ): GetFilesResponse {
         const allActivities = Array.from(activityStore.values()).flat();
-        const allPatches = Array.from(patchStore.values()).flat();
+        const allPatches = Array.from(patchStore.values());
+        const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         // Collect unique files with active users
         const filesMap = new Map<string, FileInfo>();
 
         for (const activity of allActivities) {
-            const fileKey = `${activity.repositoryRemoteUrl}:${activity.filePath}`;
+            const activityBranch = normalizeUpstreamBranch(activity.upstreamBranch);
+            if (normalizedFilterBranch !== undefined && activityBranch !== normalizedFilterBranch) {
+                continue;
+            }
+
+            const fileKey = `${activity.repositoryRemoteUrl}:${activityBranch ?? ""}:${activity.filePath}`;
             if (!filesMap.has(fileKey)) {
                 const activeUsers = getActiveUsersForFile(
                     activity.repositoryRemoteUrl,
                     activity.filePath,
+                    activityBranch,
                     allActivities,
                 );
 
@@ -186,6 +232,7 @@ export class ActivityController {
                     const patches = allPatches.filter(
                         (p) =>
                             p.repositoryRemoteUrl === activity.repositoryRemoteUrl &&
+                            normalizeUpstreamBranch(p.upstreamBranch) === activityBranch &&
                             pathsReferToSameFile(p.repositoryFilePath, activity.filePath),
                     );
 
@@ -194,6 +241,7 @@ export class ActivityController {
 
                     filesMap.set(fileKey, {
                         repositoryRemoteUrl: activity.repositoryRemoteUrl,
+                        upstreamBranch: activityBranch,
                         repositoryFilePath: displayPath,
                         repositoryFileName: extractFileName(displayPath),
                         activeUsers,
@@ -202,6 +250,7 @@ export class ActivityController {
                         lastActivity: getLastActivityTimestamp(
                             activity.repositoryRemoteUrl,
                             activity.filePath,
+                            activityBranch,
                             allActivities,
                         ),
                     });
@@ -217,17 +266,18 @@ export class ActivityController {
                 continue;
             }
 
-            const repoUrl = fileInfo.repositoryRemoteUrl;
-            if (!reposMap.has(repoUrl)) {
-                reposMap.set(repoUrl, {
-                    repositoryRemoteUrl: repoUrl,
-                    repositoryName: extractRepositoryName(repoUrl),
+            const repoKey = `${fileInfo.repositoryRemoteUrl}:${normalizeUpstreamBranch(fileInfo.upstreamBranch) ?? ""}`;
+            if (!reposMap.has(repoKey)) {
+                reposMap.set(repoKey, {
+                    repositoryRemoteUrl: fileInfo.repositoryRemoteUrl,
+                    upstreamBranch: fileInfo.upstreamBranch,
+                    repositoryName: extractRepositoryName(fileInfo.repositoryRemoteUrl),
                     fileCount: 0,
                     files: [],
                 });
             }
 
-            reposMap.get(repoUrl)!.files.push(fileInfo);
+            reposMap.get(repoKey)!.files.push(fileInfo);
         }
 
         // Sort files by last activity timestamp (newest first)
@@ -246,15 +296,18 @@ export class ActivityController {
     }
 
     /**
-     * Returns shared patches, optionally filtered by repository, file, and user.
+     * Returns shared patches, optionally filtered by repository, file, user, and branch.
+     * Returns latest-state-only patches (one per composite key).
      */
     @Get("/patches")
     getPatches(
         @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
         @QueryParam("repositoryFilePath") repositoryFilePath?: string,
         @QueryParam("userName") userName?: string,
+        @QueryParam("upstreamBranch") upstreamBranch?: string,
     ): GetPatchesResponse {
-        let patches = Array.from(patchStore.values()).flat();
+        let patches = Array.from(patchStore.values());
+        const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         if (repositoryRemoteUrl) {
             patches = patches.filter((patch) => patch.repositoryRemoteUrl === repositoryRemoteUrl);
@@ -268,6 +321,12 @@ export class ActivityController {
             patches = patches.filter((patch) => patch.userName === userName);
         }
 
+        if (normalizedFilterBranch !== undefined) {
+            patches = patches.filter(
+                (patch) => normalizeUpstreamBranch(patch.upstreamBranch) === normalizedFilterBranch,
+            );
+        }
+
         patches.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
 
         const response: GetPatchesResponse = {
@@ -278,48 +337,36 @@ export class ActivityController {
     }
 
     /**
-     * Receives a generated git patch and stores it in memory.
+     * Receives a generated git patch and stores it using latest-state-only model.
+     * Each composite key (repo+branch+user+file+changeType+workingState+commitSha) maps to one patch.
      */
     @Post("/patches")
     async receivePatch(@Body() patch: PatchDto): Promise<PostPatchesResponse> {
         const normalizedUserName = normalizeAndValidateIdentity(patch.userName);
-        const key = `${patch.repositoryRemoteUrl}:${patch.repositoryFilePath}`;
-        if (!patchStore.has(key)) {
-            patchStore.set(key, []);
-        }
+        const normalizedUpstreamBranch = normalizeUpstreamBranch(patch.upstreamBranch);
 
-        const records = patchStore.get(key)!;
-        const existingPatch = records.find(
-            (record) =>
-                record.userName === patch.userName &&
-                record.baseCommit === patch.baseCommit &&
-                record.patch === patch.patch,
-        );
+        const storedPatch: StoredPatch = {
+            ...patch,
+            userName: normalizedUserName,
+            upstreamBranch: normalizedUpstreamBranch,
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            receivedAt: new Date().toISOString(),
+        };
 
-        if (!existingPatch) {
-            records.push({
-                ...patch,
-                userName: normalizedUserName,
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-                receivedAt: new Date().toISOString(),
-            });
-        }
-
-        // Keep most recent records per file key to avoid unbounded memory usage.
-        if (records.length > 200) {
-            records.splice(0, records.length - 200);
-        }
+        const compositeKey = createPatchCompositeKey(storedPatch);
+        patchStore.set(compositeKey, storedPatch);
 
         const response: PostPatchesResponse = {
             success: true,
-            message: "Patch stored",
+            message: "Patch stored (latest-state-only)",
             timestamp: new Date().toISOString(),
         };
         return response;
     }
 
     /**
-     * Replaces all previously uploaded patches for a user/repository with the currently active patch list.
+     * Replaces all previously uploaded patches for a user/repository/branch with the currently active patch list.
+     * Uses latest-state-only model: each composite key receives exactly one patch per sync.
      */
     @Post("/patches/sync")
     async synchronizePatches(@Body() body: PatchSyncRequest): Promise<PostPatchesResponse> {
@@ -334,6 +381,7 @@ export class ActivityController {
 
         const resolvedUserName =
             body?.userName?.trim() || synchronizedPatches.find((patch) => patch.userName)?.userName?.trim();
+        const normalizedRequestBranch = normalizeUpstreamBranch(body?.upstreamBranch);
 
         if (!resolvedUserName) {
             throw new BadRequestError("userName is required (request-level or patch item-level).");
@@ -341,24 +389,22 @@ export class ActivityController {
 
         const normalizedUserName = normalizeAndValidateIdentity(resolvedUserName);
 
+        // Remove all patches matching this user/repository/branch scope
         let removedCount = 0;
-        for (const [fileKey, records] of patchStore.entries()) {
-            const retainedRecords = records.filter(
-                (record) =>
-                    !(
-                        record.repositoryRemoteUrl === resolvedRepositoryRemoteUrl &&
-                        record.userName === normalizedUserName
-                    ),
-            );
-            removedCount += records.length - retainedRecords.length;
-
-            if (retainedRecords.length === 0) {
-                patchStore.delete(fileKey);
-            } else {
-                patchStore.set(fileKey, retainedRecords);
+        for (const compositeKey of Array.from(patchStore.keys())) {
+            const patch = patchStore.get(compositeKey)!;
+            if (
+                patch.repositoryRemoteUrl === resolvedRepositoryRemoteUrl &&
+                patch.userName === normalizedUserName &&
+                (normalizedRequestBranch === undefined ||
+                    normalizeUpstreamBranch(patch.upstreamBranch) === normalizedRequestBranch)
+            ) {
+                patchStore.delete(compositeKey);
+                removedCount += 1;
             }
         }
 
+        // Add all new patches using latest-state-only composite keys
         let createdCount = 0;
         for (const patch of synchronizedPatches) {
             if (!patch.repositoryFilePath?.trim() || !patch.baseCommit?.trim() || !patch.patch?.trim()) {
@@ -367,25 +413,31 @@ export class ActivityController {
 
             const patchRepositoryRemoteUrl = patch.repositoryRemoteUrl?.trim() || resolvedRepositoryRemoteUrl;
             const patchUserName = patch.userName?.trim() || normalizedUserName;
+            const patchUpstreamBranch = normalizeUpstreamBranch(patch.upstreamBranch) ?? normalizedRequestBranch;
             if (!patchRepositoryRemoteUrl || !patchUserName) {
                 continue;
             }
 
-            const key = `${patchRepositoryRemoteUrl}:${patch.repositoryFilePath}`;
-            if (!patchStore.has(key)) {
-                patchStore.set(key, []);
-            }
-
-            patchStore.get(key)!.push({
+            const storedPatch: StoredPatch = {
                 repositoryRemoteUrl: patchRepositoryRemoteUrl,
                 userName: patchUserName,
+                upstreamBranch: patchUpstreamBranch,
                 repositoryFilePath: patch.repositoryFilePath,
                 baseCommit: patch.baseCommit,
                 patch: patch.patch,
                 timestamp: normalizeSyncTimestamp(patch.timestamp),
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                 receivedAt: new Date().toISOString(),
-            });
+                ...(patch as any).changeType && { changeType: (patch as any).changeType },
+                ...(patch as any).workingState && { workingState: (patch as any).workingState },
+                ...(patch as any).commitSha && { commitSha: (patch as any).commitSha },
+                ...(patch as any).commitShortSha && { commitShortSha: (patch as any).commitShortSha },
+                ...(patch as any).commitMessage && { commitMessage: (patch as any).commitMessage },
+                ...(patch as any).contentHash && { contentHash: (patch as any).contentHash },
+            };
+
+            const compositeKey = createPatchCompositeKey(storedPatch);
+            patchStore.set(compositeKey, storedPatch);
             createdCount += 1;
         }
 
@@ -404,8 +456,10 @@ export class ActivityController {
     getActivities(
         @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
         @QueryParam("userName") userName?: string,
+        @QueryParam("upstreamBranch") upstreamBranch?: string,
     ): GetActivitiesResponse {
         let activities = Array.from(activityStore.values()).flat();
+        const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         if (repositoryRemoteUrl) {
             activities = activities.filter((activity) => activity.repositoryRemoteUrl === repositoryRemoteUrl);
@@ -413,6 +467,12 @@ export class ActivityController {
 
         if (userName) {
             activities = activities.filter((activity) => activity.userName === userName);
+        }
+
+        if (normalizedFilterBranch !== undefined) {
+            activities = activities.filter(
+                (activity) => normalizeUpstreamBranch(activity.upstreamBranch) === normalizedFilterBranch,
+            );
         }
 
         const response: GetActivitiesResponse = {
@@ -432,9 +492,10 @@ export class ActivityController {
         // Process each activity
         body.activities.forEach((activity) => {
             const normalizedUserName = normalizeAndValidateIdentity(activity.userName);
+            const normalizedUpstreamBranch = normalizeUpstreamBranch(activity.upstreamBranch);
 
             // Partition by repository + user + file so each stream is independently append-only.
-            const key = `${activity.repositoryRemoteUrl}:${normalizedUserName}:${activity.filePath}`;
+            const key = `${activity.repositoryRemoteUrl}:${normalizedUpstreamBranch ?? ""}:${normalizedUserName}:${activity.filePath}`;
 
             if (!activityStore.has(key)) {
                 activityStore.set(key, []);
@@ -443,11 +504,12 @@ export class ActivityController {
             activityStore.get(key)!.push({
                 ...activity,
                 userName: normalizedUserName,
+                upstreamBranch: normalizedUpstreamBranch,
                 receivedAt: new Date().toISOString(),
             });
 
             console.log(
-                `[${activity.timestamp}] ${activity.userName} ${activity.action} ${activity.filePath} (${activity.repositoryRemoteUrl})`,
+                `[${activity.timestamp}] ${activity.userName} ${activity.action} ${activity.filePath} (${activity.repositoryRemoteUrl}${normalizedUpstreamBranch ? ` @ ${normalizedUpstreamBranch}` : ""})`,
             );
         });
 
