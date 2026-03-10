@@ -1,8 +1,9 @@
 import * as vscode from "vscode";
 import { ApiClient } from "./apiClient";
 import { OutputLogger } from "./outputLogger";
-import { ConflictStatus, FileActivityTracker } from "./fileActivityTracker";
+import { FileActivityTracker } from "./fileActivityTracker";
 import { SharedPatch } from "./sharedPatch";
+import { GitContextService } from "./fileActivity/gitContext";
 
 type TreeItemKind =
     | "status-group"
@@ -15,19 +16,11 @@ type TreeItemKind =
     | "context"
     | "sharing-status";
 
-/**
- * Simplified tree view provider that shows repositories and files with active users and patches.
- */
-export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeItem> {
+export class WorkStatusDataProvider implements vscode.TreeDataProvider<FileTreeItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<FileTreeItem | undefined | void> = new vscode.EventEmitter<
         FileTreeItem | undefined | void
     >();
     readonly onDidChangeTreeData: vscode.Event<FileTreeItem | undefined | void> = this._onDidChangeTreeData.event;
-
-    /**
-     * Cache of file tree items for reveal operations.
-     */
-    private fileItemsByPath: Map<string, FileTreeItem> = new Map();
 
     constructor(
         private apiClient: ApiClient,
@@ -47,19 +40,12 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
         }
     }
 
-    /**
-     * Resolves combined conflict state for a repository file from patch and remote signals.
-     * Delegates to tracker for authoritative conflict status determination.
-     */
-    private async getCombinedConflictStatus(
-        repositoryRemoteUrl: string,
-        repositoryFilePath: string,
-    ): Promise<ConflictStatus> {
-        if (!this.tracker) {
-            return "unknown";
-        }
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
+    }
 
-        return await this.tracker.getCombinedConflictStatusForRepositoryFile(repositoryRemoteUrl, repositoryFilePath);
+    getTreeItem(element: FileTreeItem): vscode.TreeItem | Thenable<vscode.TreeItem> {
+        return element;
     }
 
     /**
@@ -108,6 +94,103 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
     }
 
     /**
+     * Builds status section rows including repository and upstream branch context.
+     */
+    private async getRepositoryStatusItems(): Promise<FileTreeItem[]> {
+        const trackerForStatus = this.tracker as Partial<FileActivityTracker> | undefined;
+        const items: FileTreeItem[] = [];
+
+        const repositoryRemoteUrl =
+            trackerForStatus && typeof trackerForStatus.getCurrentRepositoryRemoteUrl === "function" ?
+                await trackerForStatus.getCurrentRepositoryRemoteUrl()
+            :   undefined;
+
+        if (repositoryRemoteUrl) {
+            const repoName = repositoryRemoteUrl.split("/").slice(-1)[0].replace(/\.git$/, "") || repositoryRemoteUrl;
+            items.push(
+                FileTreeItem.context(`Repository: ${repoName}`, "repo", repositoryRemoteUrl),
+            );
+        }
+
+        const upstreamBranch =
+            trackerForStatus && typeof trackerForStatus.getUpstreamBranchForCurrentRepository === "function" ?
+                await (trackerForStatus.getUpstreamBranchForCurrentRepository as () => Promise<string | undefined>)()
+            :   undefined;
+
+        if (upstreamBranch) {
+            items.push(
+                FileTreeItem.context(`Upstream: ${upstreamBranch}`, "git-branch", `Tracking branch: ${upstreamBranch}`),
+            );
+        } else if (repositoryRemoteUrl) {
+            items.push(
+                FileTreeItem.status("No upstream branch — run 'Select Upstream Branch'", "warning"),
+            );
+        }
+
+        return items;
+    }
+
+    async getChildren(element?: FileTreeItem): Promise<FileTreeItem[]> {
+        // Root: fetch repositories and files
+        if (!element) {
+            const rootItems: FileTreeItem[] = [];
+            const statusItems = await this.getStatusSectionItems();
+            const repoItems = await this.getRepositoryStatusItems();
+            rootItems.push(FileTreeItem.statusGroup([...statusItems, ...repoItems]));
+
+            return rootItems;
+        }
+
+        if (element?.kind === "status-group") {
+            const statusItems = element.statusItems ?? [];
+            statusItems.forEach((item) => {
+                item.parent = element;
+            });
+            return statusItems;
+        }
+
+        return [];
+    }
+}
+
+/**
+ * Simplified tree view provider that shows repositories and files with active users and patches.
+ */
+export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<FileTreeItem | undefined | void> = new vscode.EventEmitter<
+        FileTreeItem | undefined | void
+    >();
+    readonly onDidChangeTreeData: vscode.Event<FileTreeItem | undefined | void> = this._onDidChangeTreeData.event;
+
+    /**
+     * Cache of file tree items for reveal operations.
+     */
+    private fileItemsByPath: Map<string, FileTreeItem> = new Map();
+
+    private gitContext: GitContextService;
+
+    constructor(
+        private apiClient: ApiClient,
+        private tracker?: FileActivityTracker,
+        private logger?: OutputLogger,
+    ) {
+        this.gitContext = new GitContextService();
+        this.gitContext.initialize();
+
+        // Listen to data change events from API client
+        apiClient.onDidChangeData(() => {
+            this.refresh();
+        });
+
+        // Listen to conflict status changes from tracker
+        if (tracker) {
+            tracker.onDidChangeConflictStatus(() => {
+                this.refresh();
+            });
+        }
+    }
+
+    /**
      * Refresh tree data.
      */
     refresh(): void {
@@ -149,21 +232,11 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
     }
 
     async getChildren(element?: FileTreeItem): Promise<FileTreeItem[]> {
-        if (element?.kind === "status-group") {
-            const statusItems = element.statusItems ?? [];
-            statusItems.forEach((item) => {
-                item.parent = element;
-            });
-            return statusItems;
-        }
-
         // Root: fetch repositories and files
         if (!element) {
             const rootItems: FileTreeItem[] = [];
-            const statusItems = await this.getStatusSectionItems();
-            rootItems.push(FileTreeItem.statusGroup(statusItems));
-
             try {
+                const gitRepositories = await this.gitContext.getRepositories();
                 const repos = await this.apiClient.getFiles();
 
                 if (repos.length === 0) {
@@ -171,11 +244,27 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
                     return rootItems;
                 }
 
-                for (const repo of repos) {
-                    const repoItem = FileTreeItem.repository(repo.repositoryName, repo.repositoryRemoteUrl, repo.files);
+                for (const repo of gitRepositories || []) {
+                    const repoItem = FileTreeItem.repository(
+                        repo.rootUri.fsPath.split("/").slice(-1)[0],
+                        repo.rootUri.fsPath,
+                        repo.state?.HEAD?.upstream?.name,
+                        [],
+                    );
                     repoItem.parent = undefined;
                     rootItems.push(repoItem);
                 }
+
+                // for (const repo of repos) {
+                //     const repoItem = FileTreeItem.repository(
+                //         repo.repositoryName,
+                //         repo.repositoryRemoteUrl,
+                //         repo.upstreamBranch,
+                //         repo.files,
+                //     );
+                //     repoItem.parent = undefined;
+                //     rootItems.push(repoItem);
+                // }
 
                 return rootItems;
             } catch (error) {
@@ -196,6 +285,8 @@ export class FileTreeDataProvider implements vscode.TreeDataProvider<FileTreeIte
                 return [placeholder];
             }
 
+            const cacheKey = `${element.repositoryRemoteUrl}`;
+            this.fileItemsByPath.set(cacheKey, element);
             const fileItems = await Promise.all(
                 files.map(async (file) => {
                     // Get actual conflict patches to distinguish types
@@ -281,6 +372,7 @@ class FileTreeItem extends vscode.TreeItem {
         label: string,
         collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly statusItems?: FileTreeItem[],
+
         public readonly files?: Array<{
             repositoryRemoteUrl: string;
             repositoryFilePath: string;
@@ -327,6 +419,7 @@ class FileTreeItem extends vscode.TreeItem {
     static repository(
         name: string,
         remoteUrl: string | undefined,
+        upstreamBranch: string | undefined,
         files: Array<{
             repositoryRemoteUrl: string;
             repositoryFilePath: string;
@@ -343,7 +436,13 @@ class FileTreeItem extends vscode.TreeItem {
             lastActivity: string;
         }>,
     ): FileTreeItem {
-        const item = new FileTreeItem("repository", name, vscode.TreeItemCollapsibleState.Expanded, undefined, files);
+        const item = new FileTreeItem(
+            "repository",
+            `${name}:${upstreamBranch ?? "no upstream"}`,
+            vscode.TreeItemCollapsibleState.Expanded,
+            undefined,
+            files,
+        );
         item.iconPath = new vscode.ThemeIcon("repo");
         item.tooltip = remoteUrl ?? "Repository";
         item.description = `${files.length} file(s) being edited`;
@@ -483,5 +582,365 @@ class FileTreeItem extends vscode.TreeItem {
                 "Sharing is enabled. Click to disable file activity tracking."
             :   "Sharing is disabled. Click to enable file activity tracking.";
         return item;
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// ConflictTreeDataProvider — file-first conflict tree (workShareConflicts view)
+// ────────────────────────────────────────────────────────────────────────────
+
+type ConflictItemKind = "conflict-file" | "conflict-source" | "conflict-placeholder";
+
+/** Single node in the conflict tree. */
+class ConflictTreeItem extends vscode.TreeItem {
+    public parent: ConflictTreeItem | undefined;
+
+    constructor(
+        public readonly kind: ConflictItemKind,
+        label: string,
+        collapsibleState: vscode.TreeItemCollapsibleState,
+        public readonly repositoryFilePath?: string,
+        public readonly conflictPatch?: SharedPatch,
+    ) {
+        super(label, collapsibleState);
+    }
+
+    /** File-level node with severity icon derived from the highest-severity child patch. */
+    static file(repositoryFilePath: string, patches: SharedPatch[]): ConflictTreeItem {
+        const fileName = repositoryFilePath.split("/").slice(-1)[0] ?? repositoryFilePath;
+        const hasDefinite = patches.some((p) => p.severity === "definite" || p.committed);
+        const hasLikely = patches.some((p) => p.severity === "likely");
+
+        const item = new ConflictTreeItem(
+            "conflict-file",
+            fileName,
+            vscode.TreeItemCollapsibleState.Expanded,
+            repositoryFilePath,
+        );
+        item.description = repositoryFilePath;
+        if (hasDefinite) {
+            item.iconPath = new vscode.ThemeIcon("error", new vscode.ThemeColor("list.errorForeground"));
+            item.tooltip = `Definite conflict detected — ${patches.length} source(s)\n${repositoryFilePath}`;
+        } else if (hasLikely) {
+            item.iconPath = new vscode.ThemeIcon("warning", new vscode.ThemeColor("list.warningForeground"));
+            item.tooltip = `Likely conflict (nearby edits) — ${patches.length} source(s)\n${repositoryFilePath}`;
+        } else {
+            item.iconPath = new vscode.ThemeIcon("circle-filled", new vscode.ThemeColor("list.warningForeground"));
+            item.tooltip = `Conflict source — ${patches.length} source(s)\n${repositoryFilePath}`;
+        }
+        return item;
+    }
+
+    /** Conflict source node representing one conflicting incoming patch. */
+    static source(patch: SharedPatch, repositoryFilePath: string): ConflictTreeItem {
+        const changeLabel =
+            patch.committed ?
+                `Remote: ${patch.userName}`
+            : patch.changeType === "pending" ?
+                `${patch.userName} — commit ${patch.commitShortSha ?? patch.baseCommit.slice(0, 8)}`
+            :   `${patch.userName} — ${patch.workingState ?? "working"}`;
+        const item = new ConflictTreeItem(
+            "conflict-source",
+            changeLabel,
+            vscode.TreeItemCollapsibleState.None,
+            repositoryFilePath,
+            patch,
+        );
+        item.description = patch.commitMessage ?? (patch.committed ? "committed" : patch.workingState ?? "");
+
+        const severity = patch.severity ?? (patch.committed ? "definite" : undefined);
+        if (severity === "definite" || patch.committed) {
+            item.iconPath = new vscode.ThemeIcon("error", new vscode.ThemeColor("list.errorForeground"));
+            item.tooltip = `Definite conflict: ${changeLabel}`;
+        } else if (severity === "likely") {
+            item.iconPath = new vscode.ThemeIcon("warning", new vscode.ThemeColor("list.warningForeground"));
+            item.tooltip = `Likely conflict (nearby edits): ${changeLabel}`;
+        } else {
+            item.iconPath = new vscode.ThemeIcon("circle-filled");
+            item.tooltip = changeLabel;
+        }
+
+        item.command = {
+            command: "work-share.openConflictDiff",
+            title: "Open conflict diff",
+            arguments: [
+                {
+                    patch: {
+                        ...patch,
+                        timestamp: patch.timestamp.toISOString(),
+                    },
+                    repositoryFilePath,
+                },
+            ],
+        };
+        return item;
+    }
+
+    static placeholder(label: string): ConflictTreeItem {
+        const item = new ConflictTreeItem("conflict-placeholder", label, vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon("pass-filled", new vscode.ThemeColor("testing.iconPassed"));
+        return item;
+    }
+}
+
+/**
+ * Tree data provider for the Conflicts view (`workShareConflicts`).
+ * Organized by file first; each file node expands to show conflicting patch sources.
+ * Supports reveal-on-open so the active file's conflict node is highlighted automatically.
+ */
+export class ConflictTreeDataProvider implements vscode.TreeDataProvider<ConflictTreeItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<ConflictTreeItem | undefined | void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    /** Cache of file-level items keyed by repositoryFilePath for reveal operations. */
+    private fileItemsByPath = new Map<string, ConflictTreeItem>();
+
+    constructor(private tracker?: FileActivityTracker) {
+        if (tracker) {
+            tracker.onDidChangeConflictStatus(() => this.refresh());
+        }
+    }
+
+    refresh(): void {
+        this.fileItemsByPath.clear();
+        this._onDidChangeTreeData.fire();
+    }
+
+    getTreeItem(element: ConflictTreeItem): vscode.TreeItem {
+        return element;
+    }
+
+    getParent(element: ConflictTreeItem): vscode.ProviderResult<ConflictTreeItem | undefined> {
+        return element.parent;
+    }
+
+    /**
+     * Reveals the conflict tree node for the given repository-relative file path.
+     * Called automatically when the active editor changes.
+     */
+    async revealFileByPath(
+        treeView: vscode.TreeView<ConflictTreeItem | undefined>,
+        repositoryFilePath: string,
+    ): Promise<void> {
+        const item = this.fileItemsByPath.get(repositoryFilePath);
+        if (!item) {
+            return;
+        }
+        try {
+            await treeView.reveal(item, { select: true, focus: false, expand: true });
+        } catch {
+            // Ignore transient reveal errors.
+        }
+    }
+
+    async getChildren(element?: ConflictTreeItem): Promise<ConflictTreeItem[]> {
+        if (!element) {
+            const allConflicts = this.tracker?.getAllProjectFileConflicts() ?? new Map<string, SharedPatch[]>();
+            if (allConflicts.size === 0) {
+                return [ConflictTreeItem.placeholder("No conflicts detected")];
+            }
+
+            return Array.from(allConflicts.entries()).map(([filePath, patches]) => {
+                const node = ConflictTreeItem.file(filePath, patches);
+                this.fileItemsByPath.set(filePath, node);
+                return node;
+            });
+        }
+
+        if (element.kind === "conflict-file" && element.repositoryFilePath) {
+            const patches =
+                this.tracker?.getAllProjectFileConflicts().get(element.repositoryFilePath) ?? [];
+            return patches.map((patch) => {
+                const child = ConflictTreeItem.source(patch, element.repositoryFilePath!);
+                child.parent = element;
+                return child;
+            });
+        }
+
+        return [];
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// UserTreeDataProvider — user-first team activity tree (workShareUsers view)
+// ────────────────────────────────────────────────────────────────────────────
+
+type UserItemKind = "user" | "user-repo-branch" | "user-patch" | "user-placeholder";
+
+/** Single node in the user activity tree. */
+class UserTreeItem extends vscode.TreeItem {
+    public parent: UserTreeItem | undefined;
+
+    constructor(
+        public readonly kind: UserItemKind,
+        label: string,
+        collapsibleState: vscode.TreeItemCollapsibleState,
+        public readonly patch?: SharedPatch,
+    ) {
+        super(label, collapsibleState);
+    }
+
+    static userRoot(userName: string): UserTreeItem {
+        const item = new UserTreeItem("user", userName, vscode.TreeItemCollapsibleState.Expanded);
+        item.iconPath = new vscode.ThemeIcon("account");
+        item.tooltip = `Team member: ${userName}`;
+        return item;
+    }
+
+    static repoBranchGroup(repoName: string, upstreamBranch: string | undefined): UserTreeItem {
+        const label = upstreamBranch ? `${repoName} / ${upstreamBranch}` : repoName;
+        const item = new UserTreeItem("user-repo-branch", label, vscode.TreeItemCollapsibleState.Expanded);
+        item.iconPath = new vscode.ThemeIcon("git-branch");
+        item.tooltip = label;
+        return item;
+    }
+
+    static patchLeaf(patch: SharedPatch): UserTreeItem {
+        let label: string;
+        let icon: string;
+        let description: string;
+
+        if (patch.changeType === "pending") {
+            // Pending commit: show message + short SHA
+            const sha = patch.commitShortSha ?? patch.commitSha?.slice(0, 8) ?? patch.baseCommit.slice(0, 8);
+            label = patch.commitMessage ? `${patch.commitMessage} (${sha})` : sha;
+            icon = "tag";
+            description = patch.repositoryFilePath;
+        } else {
+            // Working change: show file path + staged/unstaged badge
+            label = patch.repositoryFilePath.split("/").slice(-1)[0] ?? patch.repositoryFilePath;
+            icon = patch.workingState === "staged" ? "debug-stackframe-focused" : "circle-outline";
+            description = patch.workingState === "staged" ? "staged" : "unstaged";
+        }
+
+        const item = new UserTreeItem("user-patch", label, vscode.TreeItemCollapsibleState.None, patch);
+        item.iconPath = new vscode.ThemeIcon(icon);
+        item.description = description;
+        item.tooltip = `${patch.userName} — ${patch.repositoryFilePath}`;
+        item.command = {
+            command: "work-share.openConflictDiff",
+            title: "Open diff",
+            arguments: [
+                {
+                    patch: { ...patch, timestamp: patch.timestamp.toISOString() },
+                    repositoryFilePath: patch.repositoryFilePath,
+                },
+            ],
+        };
+        return item;
+    }
+
+    static placeholder(label: string): UserTreeItem {
+        const item = new UserTreeItem("user-placeholder", label, vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon("info");
+        return item;
+    }
+}
+
+/**
+ * Tree data provider for the Team Activity view (`workShareUsers`).
+ * Organized by user → repository/branch → pending commits and working changes.
+ */
+export class UserTreeDataProvider implements vscode.TreeDataProvider<UserTreeItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<UserTreeItem | undefined | void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    /** In-memory cache of patches grouped by user for the current render cycle. */
+    private patchesByUser: Map<string, SharedPatch[]> = new Map();
+    /** Current user name to exclude own patches from the tree. */
+    private currentUserName: string | undefined;
+
+    constructor(
+        private apiClient: ApiClient,
+        private tracker?: FileActivityTracker,
+    ) {
+        apiClient.onDidChangeData(() => this.refresh());
+        if (tracker) {
+            tracker.onDidChangeConflictStatus(() => this.refresh());
+        }
+    }
+
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
+    }
+
+    getTreeItem(element: UserTreeItem): vscode.TreeItem {
+        return element;
+    }
+
+    getParent(element: UserTreeItem): vscode.ProviderResult<UserTreeItem | undefined> {
+        return element.parent;
+    }
+
+    /** Reloads patches from the server and groups them by userName. */
+    private async reloadPatches(): Promise<void> {
+        this.currentUserName = await this.tracker?.getCurrentUserName();
+        const repositoryRemoteUrl = await this.tracker?.getCurrentRepositoryRemoteUrl();
+        const patches = await this.apiClient.getPatches({ repositoryRemoteUrl });
+
+        this.patchesByUser.clear();
+        for (const patch of patches) {
+            if (patch.userName === this.currentUserName) {
+                continue; // Skip own patches.
+            }
+            const existing = this.patchesByUser.get(patch.userName) ?? [];
+            existing.push(patch);
+            this.patchesByUser.set(patch.userName, existing);
+        }
+    }
+
+    async getChildren(element?: UserTreeItem): Promise<UserTreeItem[]> {
+        // Root: one node per distinct team member.
+        if (!element) {
+            await this.reloadPatches();
+
+            if (this.patchesByUser.size === 0) {
+                return [UserTreeItem.placeholder("No team activity yet")];
+            }
+
+            return Array.from(this.patchesByUser.keys()).map((userName) => {
+                return UserTreeItem.userRoot(userName);
+            });
+        }
+
+        // Under a user: one node per repository+upstream-branch group.
+        if (element.kind === "user") {
+            const userPatches = this.patchesByUser.get(element.label as string) ?? [];
+            const groupKey = (p: SharedPatch) =>
+                `${p.repositoryRemoteUrl}::${p.upstreamBranch ?? ""}`;
+
+            const groups = new Map<string, SharedPatch[]>();
+            for (const patch of userPatches) {
+                const key = groupKey(patch);
+                const existing = groups.get(key) ?? [];
+                existing.push(patch);
+                groups.set(key, existing);
+            }
+
+            return Array.from(groups.entries()).map(([, patches]) => {
+                const first = patches[0];
+                const repoName =
+                    first?.repositoryRemoteUrl?.split("/").slice(-1)[0]?.replace(/\.git$/, "") ??
+                    "unknown-repo";
+                const upstreamBranch = first?.upstreamBranch;
+                const groupNode = UserTreeItem.repoBranchGroup(repoName, upstreamBranch);
+                groupNode.parent = element;
+                // Attach patches as context for the next level.
+                (groupNode as UserTreeItem & { _patches?: SharedPatch[] })._patches = patches;
+                return groupNode;
+            });
+        }
+
+        // Under a repo/branch group: leaf patches.
+        if (element.kind === "user-repo-branch") {
+            const patches = (element as UserTreeItem & { _patches?: SharedPatch[] })._patches ?? [];
+            return patches.map((patch) => {
+                const leaf = UserTreeItem.patchLeaf(patch);
+                leaf.parent = element;
+                return leaf;
+            });
+        }
+
+        return [];
     }
 }

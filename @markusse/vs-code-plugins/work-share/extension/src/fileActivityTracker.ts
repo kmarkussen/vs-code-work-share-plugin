@@ -336,6 +336,37 @@ export class FileActivityTracker {
     }
 
     /**
+     * Returns a snapshot of all conflict entries across every tracked file.
+     * Used by the conflict tree view to render file-level nodes.
+     */
+    public getAllProjectFileConflicts(): Map<string, SharedPatch[]> {
+        const result = new Map<string, SharedPatch[]>();
+        for (const [filePath, conflicts] of this.projectFileConflicts) {
+            if (conflicts && conflicts.length > 0) {
+                result.set(filePath, conflicts);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Resolves the upstream branch ref for the currently active repository.
+     * Returns the `remote/name` string or undefined if not configured.
+     */
+    public async getUpstreamBranchForCurrentRepository(): Promise<string | undefined> {
+        await this.gitContext.initialize();
+        const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+        const repository =
+            activeFilePath ?
+                this.gitContext.resolveRepositoryForFile(activeFilePath)
+            :   this.gitContext.resolveWorkspaceRepository();
+        if (!repository) {
+            return undefined;
+        }
+        return this.resolveEffectiveUpstreamBranch(repository);
+    }
+
+    /**
      * Merges patch-based and remote committed conflict sources into a single deterministic list.
      */
     private mergeConflictSources(

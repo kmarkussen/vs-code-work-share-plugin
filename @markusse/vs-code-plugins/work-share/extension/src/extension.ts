@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { FileActivityTracker } from "./fileActivityTracker";
 import { ApiClient } from "./apiClient";
 import { OutputLogger } from "./outputLogger";
-import { FileTreeDataProvider, WorkStatusDataProvider } from "./fileTreeDataProvider";
+import { ConflictTreeDataProvider, FileTreeDataProvider, UserTreeDataProvider, WorkStatusDataProvider } from "./fileTreeDataProvider";
 
 let fileActivityTracker: FileActivityTracker | undefined;
 
@@ -87,6 +87,36 @@ export function activate(context: vscode.ExtensionContext) {
                         treeDataProvider.revealFileByPath(treeView, repoPath, repoUrl);
                     }
                 }, 500);
+            }
+        }),
+    );
+
+    // Conflict tree view.
+    const conflictTreeDataProvider = new ConflictTreeDataProvider(fileActivityTracker);
+    const conflictTreeView = vscode.window.createTreeView("workShareConflicts", {
+        treeDataProvider: conflictTreeDataProvider,
+        showCollapseAll: true,
+    });
+    context.subscriptions.push(conflictTreeView);
+
+    // User / team activity tree view.
+    const userTreeDataProvider = new UserTreeDataProvider(apiClient, fileActivityTracker);
+    const userTreeView = vscode.window.createTreeView("workShareUsers", {
+        treeDataProvider: userTreeDataProvider,
+        showCollapseAll: true,
+    });
+    context.subscriptions.push(userTreeView);
+
+    // Reveal active file in conflict tree when editor focus changes.
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor((editor) => {
+            if (editor && conflictTreeView.visible && fileActivityTracker) {
+                const repoPath = fileActivityTracker.getRepositoryRelativeFilePath(editor.document.uri.fsPath);
+                if (repoPath) {
+                    setTimeout(() => {
+                        void conflictTreeDataProvider.revealFileByPath(conflictTreeView, repoPath);
+                    }, 500);
+                }
             }
         }),
     );

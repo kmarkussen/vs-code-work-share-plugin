@@ -177,6 +177,14 @@
         {
           "id": "workShareActivity",
           "name": "File Activity"
+        },
+        {
+          "id": "workShareConflicts",
+          "name": "Conflicts"
+        },
+        {
+          "id": "workShareUsers",
+          "name": "Team Activity"
         }
       ]
     }
