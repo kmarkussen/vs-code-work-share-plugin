@@ -36,6 +36,13 @@ export class PatchSharingService {
     }
 
     /**
+     * Builds a stable dedupe key for a file and working state.
+     */
+    private getFileStateDedupeKey(filePath: string, workingState: "staged" | "unstaged"): string {
+        return `${filePath}:${workingState}`;
+    }
+
+    /**
      * Resolves commits that are ahead of the configured upstream branch, oldest first.
      */
     private async resolvePendingCommitShas(repository: GitRepository): Promise<string[]> {
@@ -85,9 +92,13 @@ export class PatchSharingService {
     /**
      * Lists unstaged repository-relative file paths, preferring Git API state and falling back to CLI.
      */
-    private async resolveChangedRepositoryFilePaths(repository: GitRepository): Promise<string[]> {
+    private async resolveChangedRepositoryFilePaths(
+        repository: GitRepository,
+        workingState: "staged" | "unstaged",
+    ): Promise<string[]> {
         const rootPath = repository.rootUri.fsPath;
-        const changes = repository.state?.workingTreeChanges;
+        const changes =
+            workingState === "staged" ? repository.state?.indexChanges : repository.state?.workingTreeChanges;
 
         if (changes && changes.length > 0) {
             const filePathSet = new Set<string>();
@@ -101,7 +112,8 @@ export class PatchSharingService {
             return Array.from(filePathSet.values());
         }
 
-        const changedFilesResult = await this.gitContext.runGitCommand(rootPath, ["diff", "--name-only"]);
+        const args = workingState === "staged" ? ["diff", "--cached", "--name-only"] : ["diff", "--name-only"];
+        const changedFilesResult = await this.gitContext.runGitCommand(rootPath, args);
         if (changedFilesResult.exitCode !== 0) {
             return [];
         }
@@ -110,6 +122,59 @@ export class PatchSharingService {
             .split(/\r?\n/)
             .map((entry) => entry.trim())
             .filter((entry) => entry.length > 0);
+    }
+
+    /**
+     * Creates working patches for either staged or unstaged state.
+     */
+    private async buildWorkingPatchesForState(
+        repository: GitRepository,
+        repositoryRemoteUrl: string,
+        userName: string,
+        baseCommit: string,
+        workingState: "staged" | "unstaged",
+    ): Promise<SharedPatch[]> {
+        const repositoryRootPath = repository.rootUri.fsPath;
+        const repositoryFilePaths = await this.resolveChangedRepositoryFilePaths(repository, workingState);
+
+        const patches: SharedPatch[] = [];
+        for (const repositoryFilePath of repositoryFilePaths) {
+            const diffArgs =
+                workingState === "staged" ?
+                    ["diff", "--cached", "--", repositoryFilePath]
+                :   ["diff", "--", repositoryFilePath];
+            const patchResult = await this.gitContext.runGitCommand(repositoryRootPath, diffArgs);
+
+            if (patchResult.exitCode !== 0 || !patchResult.stdout.trim()) {
+                continue;
+            }
+
+            const patchDigest = createHash("sha256")
+                .update(baseCommit)
+                .update("\n")
+                .update(workingState)
+                .update("\n")
+                .update(patchResult.stdout)
+                .digest("hex");
+
+            patches.push({
+                repositoryRemoteUrl,
+                userName,
+                repositoryFilePath,
+                baseCommit,
+                patch: patchResult.stdout,
+                timestamp: new Date(),
+                changeType: "working",
+                workingState,
+                contentHash: patchDigest,
+            });
+
+            const absoluteFilePath = `${repositoryRootPath}/${repositoryFilePath}`.replace(/\\/g, "/");
+            const dedupeKey = this.getFileStateDedupeKey(absoluteFilePath, workingState);
+            this.lastSharedPatchDigestByFile.set(dedupeKey, patchDigest);
+        }
+
+        return patches;
     }
 
     /**
@@ -138,7 +203,6 @@ export class PatchSharingService {
         repositoryRemoteUrl: string,
         userName: string,
     ): Promise<SharedPatch[]> {
-        const repositoryRootPath = repository.rootUri.fsPath;
         const baseCommit = await this.resolveBaseCommit(repository);
         if (!baseCommit) {
             this.logger?.warn("Patch sync skipped: could not resolve base commit.", {
@@ -146,40 +210,21 @@ export class PatchSharingService {
             });
             return [];
         }
-        const repositoryFilePaths = await this.resolveChangedRepositoryFilePaths(repository);
-
-        const activePatches: SharedPatch[] = [];
-        for (const repositoryFilePath of repositoryFilePaths) {
-            const patchResult = await this.gitContext.runGitCommand(repositoryRootPath, [
-                "diff",
-                "--",
-                repositoryFilePath,
-            ]);
-
-            if (patchResult.exitCode !== 0 || !patchResult.stdout.trim()) {
-                continue;
-            }
-
-            const patchDigest = createHash("sha256")
-                .update(baseCommit)
-                .update("\n")
-                .update(patchResult.stdout)
-                .digest("hex");
-
-            activePatches.push({
-                repositoryRemoteUrl,
-                userName,
-                repositoryFilePath,
-                baseCommit,
-                patch: patchResult.stdout,
-                timestamp: new Date(),
-                changeType: "working",
-                contentHash: patchDigest,
-            });
-
-            const absoluteFilePath = `${repositoryRootPath}/${repositoryFilePath}`.replace(/\\/g, "/");
-            this.lastSharedPatchDigestByFile.set(absoluteFilePath, patchDigest);
-        }
+        const stagedPatches = await this.buildWorkingPatchesForState(
+            repository,
+            repositoryRemoteUrl,
+            userName,
+            baseCommit,
+            "staged",
+        );
+        const unstagedPatches = await this.buildWorkingPatchesForState(
+            repository,
+            repositoryRemoteUrl,
+            userName,
+            baseCommit,
+            "unstaged",
+        );
+        const activePatches = [...stagedPatches, ...unstagedPatches];
 
         this.logger?.info("Patch sync active set built.", {
             repositoryRemoteUrl,
@@ -308,48 +353,57 @@ export class PatchSharingService {
             return;
         }
 
-        const patchResult = await this.gitContext.runGitCommand(repositoryRootPath, ["diff", "--", repositoryFilePath]);
-        if (patchResult.exitCode !== 0) {
-            this.logger?.error("Patch sharing failed: git diff command failed.", {
-                filePath,
+        const workingStates: Array<"staged" | "unstaged"> = ["staged", "unstaged"];
+        for (const workingState of workingStates) {
+            const diffArgs =
+                workingState === "staged" ?
+                    ["diff", "--cached", "--", repositoryFilePath]
+                :   ["diff", "--", repositoryFilePath];
+            const patchResult = await this.gitContext.runGitCommand(repositoryRootPath, diffArgs);
+            if (patchResult.exitCode !== 0) {
+                this.logger?.error("Patch sharing failed: git diff command failed.", {
+                    filePath,
+                    repositoryFilePath,
+                    workingState,
+                    stderr: patchResult.stderr,
+                });
+                continue;
+            }
+
+            const patchText = patchResult.stdout;
+            if (!patchText.trim()) {
+                continue;
+            }
+
+            const patchDigest = createHash("sha256")
+                .update(baseCommit)
+                .update("\n")
+                .update(workingState)
+                .update("\n")
+                .update(patchText)
+                .digest("hex");
+            const dedupeKey = this.getFileStateDedupeKey(filePath, workingState);
+            if (this.lastSharedPatchDigestByFile.get(dedupeKey) === patchDigest) {
+                this.logger?.info("Patch sharing skipped: duplicate patch digest.", {
+                    repositoryFilePath,
+                    workingState,
+                });
+                continue;
+            }
+
+            this.lastSharedPatchDigestByFile.set(dedupeKey, patchDigest);
+
+            await this.apiClient.sendPatch({
+                repositoryRemoteUrl,
+                userName,
                 repositoryFilePath,
-                stderr: patchResult.stderr,
+                baseCommit,
+                patch: patchText,
+                timestamp: new Date(),
+                changeType: "working",
+                workingState,
+                contentHash: patchDigest,
             });
-            return;
         }
-
-        const patchText = patchResult.stdout;
-        if (!patchText.trim()) {
-            this.logger?.info("Patch sharing skipped: no unstaged diff to share.", { repositoryFilePath });
-            return;
-        }
-
-        const patchDigest = createHash("sha256").update(baseCommit).update("\n").update(patchText).digest("hex");
-
-        if (this.lastSharedPatchDigestByFile.get(filePath) === patchDigest) {
-            this.logger?.info("Patch sharing skipped: duplicate patch digest.", { repositoryFilePath });
-            return;
-        }
-
-        this.lastSharedPatchDigestByFile.set(filePath, patchDigest);
-
-        this.logger?.info("Patch generated for sharing.", {
-            repositoryRemoteUrl,
-            repositoryFilePath,
-            baseCommit,
-            patchLength: patchText.length,
-            patchDigest,
-        });
-
-        await this.apiClient.sendPatch({
-            repositoryRemoteUrl,
-            userName,
-            repositoryFilePath,
-            baseCommit,
-            patch: patchText,
-            timestamp: new Date(),
-            changeType: "working",
-            contentHash: patchDigest,
-        });
     }
 }
