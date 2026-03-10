@@ -36,6 +36,7 @@ suite("Extension Test Suite", () => {
         assert.ok(commands.includes("work-share.openConflictDiff"));
         assert.ok(commands.includes("work-share.syncCurrentRepository"));
         assert.ok(commands.includes("work-share.syncAllRepositories"));
+        assert.ok(commands.includes("work-share.selectUpstreamBranch"));
     });
 
     test("Configuration should have default values", () => {

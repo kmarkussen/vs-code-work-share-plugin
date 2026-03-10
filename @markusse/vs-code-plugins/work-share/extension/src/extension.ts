@@ -150,6 +150,20 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.selectUpstreamBranch", async () => {
+            if (!fileActivityTracker) {
+                vscode.window.showInformationMessage("Work Share: Sync coordinator is not available.");
+                return;
+            }
+
+            const selected = await fileActivityTracker.selectUpstreamBranchForCurrentRepository();
+            if (selected) {
+                vscode.window.showInformationMessage("Work Share: Upstream branch saved for this repository.");
+            }
+        }),
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand("work-share.openConflictDiff", async (args: OpenConflictDiffArgs) => {
             if (!fileActivityTracker || !args?.patch) {
                 vscode.window.showWarningMessage("Work Share: Conflict details are unavailable for this item.");

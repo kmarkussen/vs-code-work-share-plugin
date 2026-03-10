@@ -26,6 +26,9 @@ export class FileActivityTracker {
     private lastRemoteFetchAtByRepositoryRoot = new Map<string, number>();
     private lastDetachedHeadWarningAtByRepositoryRoot = new Map<string, number>();
     private remoteConflictAvailabilityIssueByRepositoryRoot = new Map<string, string>();
+    private lastNoUpstreamWarningAtByRepositoryRoot = new Map<string, number>();
+    private static readonly UPSTREAM_BRANCH_BY_REPOSITORY_ROOT_KEY =
+        "workShare.upstreamBranchByRepositoryRoot";
     private gitContext: GitContextService;
     private identityService: UserIdentityService;
     private patchSharingService: PatchSharingService;
@@ -155,13 +158,132 @@ export class FileActivityTracker {
     /**
      * Resolves the current upstream branch for a repository in `remote/name` format.
      */
-    private resolveUpstreamBranch(repository: GitRepository): string | undefined {
+    private resolveGitUpstreamBranch(repository: GitRepository): string | undefined {
         const upstream = repository.state?.HEAD?.upstream;
         if (!upstream?.remote || !upstream.name) {
             return undefined;
         }
 
         return `${upstream.remote}/${upstream.name}`;
+    }
+
+    /**
+     * Returns the user-selected upstream branch for a repository when git upstream is unset.
+     */
+    private getStoredUpstreamBranch(repositoryRootPath: string): string | undefined {
+        const mapping = this.context.workspaceState.get<Record<string, string>>(
+            FileActivityTracker.UPSTREAM_BRANCH_BY_REPOSITORY_ROOT_KEY,
+            {},
+        );
+        return mapping[repositoryRootPath];
+    }
+
+    /**
+     * Persists an upstream branch selection for a repository in extension internal state.
+     */
+    private async setStoredUpstreamBranch(repositoryRootPath: string, upstreamBranch: string): Promise<void> {
+        const mapping = this.context.workspaceState.get<Record<string, string>>(
+            FileActivityTracker.UPSTREAM_BRANCH_BY_REPOSITORY_ROOT_KEY,
+            {},
+        );
+        mapping[repositoryRootPath] = upstreamBranch;
+        await this.context.workspaceState.update(FileActivityTracker.UPSTREAM_BRANCH_BY_REPOSITORY_ROOT_KEY, mapping);
+    }
+
+    /**
+     * Resolves effective upstream branch: git-tracked branch first, then internal selection fallback.
+     */
+    private resolveEffectiveUpstreamBranch(repository: GitRepository): string | undefined {
+        return this.resolveGitUpstreamBranch(repository) ?? this.getStoredUpstreamBranch(repository.rootUri.fsPath);
+    }
+
+    /**
+     * Shows a throttled warning with action when repository has no upstream and no internal selection.
+     */
+    private async warnIfUpstreamMissing(filePath: string): Promise<void> {
+        await this.gitContext.initialize();
+        const repository = this.gitContext.resolveRepositoryForFile(filePath);
+        if (!repository) {
+            return;
+        }
+
+        if (this.resolveEffectiveUpstreamBranch(repository)) {
+            return;
+        }
+
+        const repositoryRootPath = repository.rootUri.fsPath;
+        const now = Date.now();
+        const lastWarningAt = this.lastNoUpstreamWarningAtByRepositoryRoot.get(repositoryRootPath) ?? 0;
+        if (now - lastWarningAt < 5 * 60 * 1000) {
+            return;
+        }
+
+        this.lastNoUpstreamWarningAtByRepositoryRoot.set(repositoryRootPath, now);
+        const action = "Select Upstream Branch";
+        const selectedAction = await vscode.window.showWarningMessage(
+            "Work Share: No upstream branch configured for this repository. Select one to enable branch-scoped sync and conflict checks.",
+            action,
+        );
+
+        if (selectedAction === action) {
+            await vscode.commands.executeCommand("work-share.selectUpstreamBranch");
+        }
+    }
+
+    /**
+     * Lets the user choose and persist an internal upstream branch for the current repository.
+     */
+    public async selectUpstreamBranchForCurrentRepository(): Promise<boolean> {
+        await this.gitContext.initialize();
+
+        const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+        const repository =
+            (activeFilePath ? this.gitContext.resolveRepositoryForFile(activeFilePath) : undefined) ??
+            this.gitContext.resolveWorkspaceRepository();
+        if (!repository) {
+            return false;
+        }
+
+        const refsResult = await this.gitContext.runGitCommand(repository.rootUri.fsPath, [
+            "for-each-ref",
+            "--format=%(refname:short)|%(committerdate:iso8601)",
+            "--sort=-committerdate",
+            "refs/remotes",
+        ]);
+        if (refsResult.exitCode !== 0) {
+            return false;
+        }
+
+        const items = refsResult.stdout
+            .split(/\r?\n/)
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0 && !entry.endsWith("/HEAD"))
+            .map((entry) => {
+                const [branchName, commitDate] = entry.split("|");
+                return {
+                    label: branchName,
+                    description: commitDate,
+                } as vscode.QuickPickItem;
+            });
+        if (items.length === 0) {
+            return false;
+        }
+
+        const selected = await vscode.window.showQuickPick(items, {
+            title: "Select upstream branch (Work Share internal setting)",
+            placeHolder: "Remote branches are sorted by most recent committer date.",
+            ignoreFocusOut: true,
+        });
+        if (!selected?.label) {
+            return false;
+        }
+
+        await this.setStoredUpstreamBranch(repository.rootUri.fsPath, selected.label);
+        this.logger?.info("Stored internal upstream branch selection.", {
+            repositoryRootPath: repository.rootUri.fsPath,
+            upstreamBranch: selected.label,
+        });
+        return true;
     }
 
     /**
@@ -1105,7 +1227,8 @@ export class FileActivityTracker {
             return [];
         }
 
-        const upstreamBranch = this.shouldCheckConflictsAcrossAllBranches() ? undefined : this.resolveUpstreamBranch(repository);
+        const upstreamBranch =
+            this.shouldCheckConflictsAcrossAllBranches() ? undefined : this.resolveEffectiveUpstreamBranch(repository);
 
         const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl, upstreamBranch });
         const currentUserName = await this.identityService.getCurrentUserName();
@@ -1233,7 +1356,9 @@ export class FileActivityTracker {
         const currentUserName = await this.identityService.getCurrentUserName();
         const repository = await this.gitContext.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
         const upstreamBranch =
-            repository && !this.shouldCheckConflictsAcrossAllBranches() ? this.resolveUpstreamBranch(repository) : undefined;
+            repository && !this.shouldCheckConflictsAcrossAllBranches() ?
+                this.resolveEffectiveUpstreamBranch(repository)
+            :   undefined;
         const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl, upstreamBranch });
         const repositoryRelativeFilePaths = Array.from(
             new Set(
@@ -1301,6 +1426,7 @@ export class FileActivityTracker {
                 if (editor) {
                     void this.trackActivity(editor.document.uri.fsPath, "open");
                     void this.ensureRepositorySynchronizedOnce(editor.document.uri.fsPath);
+                    void this.warnIfUpstreamMissing(editor.document.uri.fsPath);
                     void this.refreshActiveFileRemoteConflicts(true);
                 }
             }),
@@ -1363,6 +1489,7 @@ export class FileActivityTracker {
         this.lastRemoteFetchAtByRepositoryRoot.clear();
         this.lastDetachedHeadWarningAtByRepositoryRoot.clear();
         this.remoteConflictAvailabilityIssueByRepositoryRoot.clear();
+        this.lastNoUpstreamWarningAtByRepositoryRoot.clear();
     }
 
     private startUpdateTimer() {
