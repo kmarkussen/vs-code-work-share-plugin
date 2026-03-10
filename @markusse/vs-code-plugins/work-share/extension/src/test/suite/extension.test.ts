@@ -44,6 +44,7 @@ suite("Extension Test Suite", () => {
         assert.strictEqual(config.get("updateInterval"), 5000);
         assert.strictEqual(config.get("apiServerUrl"), "");
         assert.strictEqual(config.get("remoteConflictCheckInterval"), 60000);
+        assert.strictEqual(config.get("showAllConflictBranches"), false);
         assert.strictEqual(config.get("gitCommandTimeoutMs"), 30000);
     });
 

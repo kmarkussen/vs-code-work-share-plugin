@@ -4,6 +4,7 @@
 export interface SharedPatch {
     repositoryRemoteUrl: string;
     userName: string;
+    upstreamBranch?: string;
     repositoryFilePath: string;
     baseCommit: string;
     patch: string;

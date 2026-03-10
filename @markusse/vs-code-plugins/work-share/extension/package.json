@@ -137,6 +137,11 @@
           "default": 60000,
           "description": "Interval (in milliseconds) for fetching the remote tracking branch and checking the active file for possible merge conflicts. Set to 0 to disable background remote checks."
         },
+        "workShare.showAllConflictBranches": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, incoming patch conflict checks include all upstream branches instead of only the current branch."
+        },
         "workShare.gitCommandTimeoutMs": {
           "type": "number",
           "default": 30000,

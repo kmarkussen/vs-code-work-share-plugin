@@ -145,6 +145,26 @@ export class FileActivityTracker {
     }
 
     /**
+     * Determines whether conflict checks should include all branches instead of only current upstream branch.
+     */
+    private shouldCheckConflictsAcrossAllBranches(): boolean {
+        const config = vscode.workspace.getConfiguration("workShare");
+        return config.get<boolean>("showAllConflictBranches", false);
+    }
+
+    /**
+     * Resolves the current upstream branch for a repository in `remote/name` format.
+     */
+    private resolveUpstreamBranch(repository: GitRepository): string | undefined {
+        const upstream = repository.state?.HEAD?.upstream;
+        if (!upstream?.remote || !upstream.name) {
+            return undefined;
+        }
+
+        return `${upstream.remote}/${upstream.name}`;
+    }
+
+    /**
      * Detects expected auth failures from non-interactive git commands.
      */
     private isNonInteractiveGitAuthFailure(stderr: string): boolean {
@@ -1085,7 +1105,9 @@ export class FileActivityTracker {
             return [];
         }
 
-        const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl });
+        const upstreamBranch = this.shouldCheckConflictsAcrossAllBranches() ? undefined : this.resolveUpstreamBranch(repository);
+
+        const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl, upstreamBranch });
         const currentUserName = await this.identityService.getCurrentUserName();
         const relevantPatches = incomingPatches.filter(
             (patch) => patch.userName !== currentUserName && patch.repositoryFilePath === repositoryFilePath,
@@ -1209,7 +1231,10 @@ export class FileActivityTracker {
         }
 
         const currentUserName = await this.identityService.getCurrentUserName();
-        const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl });
+        const repository = await this.gitContext.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
+        const upstreamBranch =
+            repository && !this.shouldCheckConflictsAcrossAllBranches() ? this.resolveUpstreamBranch(repository) : undefined;
+        const incomingPatches = await this.apiClient.getPatches({ repositoryRemoteUrl, upstreamBranch });
         const repositoryRelativeFilePaths = Array.from(
             new Set(
                 incomingPatches

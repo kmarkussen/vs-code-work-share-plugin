@@ -43,6 +43,18 @@ export class PatchSharingService {
     }
 
     /**
+     * Returns normalized upstream branch ref in `remote/name` form when available.
+     */
+    private resolveUpstreamBranch(repository: GitRepository): string | undefined {
+        const upstream = repository.state?.HEAD?.upstream;
+        if (!upstream?.remote || !upstream.name) {
+            return undefined;
+        }
+
+        return `${upstream.remote}/${upstream.name}`;
+    }
+
+    /**
      * Resolves commits that are ahead of the configured upstream branch, oldest first.
      */
     private async resolvePendingCommitShas(repository: GitRepository): Promise<string[]> {
@@ -135,6 +147,7 @@ export class PatchSharingService {
         workingState: "staged" | "unstaged",
     ): Promise<SharedPatch[]> {
         const repositoryRootPath = repository.rootUri.fsPath;
+        const upstreamBranch = this.resolveUpstreamBranch(repository);
         const repositoryFilePaths = await this.resolveChangedRepositoryFilePaths(repository, workingState);
 
         const patches: SharedPatch[] = [];
@@ -160,6 +173,7 @@ export class PatchSharingService {
             patches.push({
                 repositoryRemoteUrl,
                 userName,
+                upstreamBranch,
                 repositoryFilePath,
                 baseCommit,
                 patch: patchResult.stdout,
@@ -247,6 +261,7 @@ export class PatchSharingService {
         if (commitShas.length === 0) {
             return [];
         }
+        const upstreamBranch = this.resolveUpstreamBranch(repository);
 
         const pendingPatches: SharedPatch[] = [];
         for (const commitSha of commitShas) {
@@ -285,6 +300,7 @@ export class PatchSharingService {
             pendingPatches.push({
                 repositoryRemoteUrl,
                 userName,
+                upstreamBranch,
                 repositoryFilePath,
                 baseCommit: fullSha || commitSha,
                 patch: patchResult.stdout,
@@ -345,6 +361,7 @@ export class PatchSharingService {
         }
 
         const repositoryRootPath = repository.rootUri.fsPath;
+        const upstreamBranch = this.resolveUpstreamBranch(repository);
         const baseCommit = await this.resolveBaseCommit(repository);
         if (!baseCommit) {
             this.logger?.error("Patch sharing failed: could not resolve base commit.", {
@@ -396,6 +413,7 @@ export class PatchSharingService {
             await this.apiClient.sendPatch({
                 repositoryRemoteUrl,
                 userName,
+                upstreamBranch,
                 repositoryFilePath,
                 baseCommit,
                 patch: patchText,

@@ -267,6 +267,7 @@ export class ApiClient {
             await this.client.post("/patches", {
                 repositoryRemoteUrl: patch.repositoryRemoteUrl,
                 userName: patch.userName,
+                upstreamBranch: patch.upstreamBranch,
                 repositoryFilePath: patch.repositoryFilePath,
                 baseCommit: patch.baseCommit,
                 patch: patch.patch,
@@ -328,6 +329,7 @@ export class ApiClient {
                 patches: payload.patches.map((patch) => ({
                     repositoryRemoteUrl: patch.repositoryRemoteUrl,
                     userName: patch.userName,
+                    upstreamBranch: patch.upstreamBranch,
                     repositoryFilePath: patch.repositoryFilePath,
                     baseCommit: patch.baseCommit,
                     patch: patch.patch,
@@ -376,6 +378,7 @@ export class ApiClient {
         repositoryRemoteUrl?: string;
         repositoryFilePath?: string;
         userName?: string;
+        upstreamBranch?: string;
     }): Promise<SharedPatch[]> {
         if (!this.client) {
             this.warnIfClientMissingOnce("getPatches", "Skipping GET /patches because API client is not configured.");
@@ -389,16 +392,24 @@ export class ApiClient {
                     repositoryRemoteUrl: filters?.repositoryRemoteUrl,
                     repositoryFilePath: filters?.repositoryFilePath,
                     userName: filters?.userName,
+                    upstreamBranch: filters?.upstreamBranch,
                 },
             });
 
             const patches = response.data.patches.map((patch) => ({
                 repositoryRemoteUrl: patch.repositoryRemoteUrl,
                 userName: patch.userName,
+                upstreamBranch: patch.upstreamBranch,
                 repositoryFilePath: patch.repositoryFilePath,
                 baseCommit: patch.baseCommit,
                 patch: patch.patch,
                 timestamp: new Date(patch.timestamp),
+                changeType: patch.changeType,
+                workingState: patch.workingState,
+                commitSha: patch.commitSha,
+                commitShortSha: patch.commitShortSha,
+                commitMessage: patch.commitMessage,
+                contentHash: patch.contentHash,
             }));
 
             this.logger?.info("GET /patches received.", {
