@@ -25,6 +25,10 @@ export class ActivityDto {
 
     @IsString()
     repositoryRemoteUrl!: string;
+
+    @IsOptional()
+    @IsString()
+    upstreamBranch?: string;
 }
 
 /**
@@ -39,6 +43,7 @@ export class ActivityBatchDto {
 
 /**
  * User input: code patch from plugin.
+ * Represents either a pending commit or working changes at a point in time.
  */
 export class PatchDto {
     @IsString()
@@ -58,6 +63,34 @@ export class PatchDto {
 
     @IsString()
     timestamp!: string;
+
+    @IsOptional()
+    @IsString()
+    upstreamBranch?: string;
+
+    @IsOptional()
+    @IsIn(["pending", "working"])
+    changeType?: "pending" | "working";
+
+    @IsOptional()
+    @IsIn(["staged", "unstaged"])
+    workingState?: "staged" | "unstaged";
+
+    @IsOptional()
+    @IsString()
+    commitSha?: string;
+
+    @IsOptional()
+    @IsString()
+    commitShortSha?: string;
+
+    @IsOptional()
+    @IsString()
+    commitMessage?: string;
+
+    @IsOptional()
+    @IsString()
+    contentHash?: string;
 }
 
 /**
@@ -77,6 +110,10 @@ export class StoredPatch extends PatchDto {
 export class FileInfo {
     @IsString()
     repositoryRemoteUrl!: string;
+
+    @IsOptional()
+    @IsString()
+    upstreamBranch?: string;
 
     @IsString()
     repositoryFilePath!: string;
@@ -109,6 +146,10 @@ export class RepositoryFilesInfo {
 
     @IsString()
     repositoryName!: string;
+
+    @IsOptional()
+    @IsString()
+    upstreamBranch?: string;
 
     @IsNumber()
     fileCount!: number;
