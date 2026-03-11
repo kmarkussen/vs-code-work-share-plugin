@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# Install native build toolchain required by better-sqlite3.
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /workspace
 
 # Copy workspace manifests first to maximize layer caching for npm installs.

@@ -9,3 +9,4 @@ dist/
 *.log
 .env
 server/public/
+@markusse/server/data/

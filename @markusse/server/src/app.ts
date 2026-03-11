@@ -1,11 +1,18 @@
 import "reflect-metadata";
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import path from "path";
 import { promises as fs } from "fs";
 import { useExpressServer } from "routing-controllers";
 import { ActivityController } from "./controllers/ActivityController";
 import { HealthCheckResponse } from "@work-share/types";
+import authRoutes from "./routes/authRoutes";
+import teamRoutes from "./routes/teamRoutes";
+import sshKeyRoutes from "./routes/sshKeyRoutes";
+import { silentRefresh } from "./middleware/auth";
+// Ensure the database is initialised on startup.
+import "./database/db";
 
 /**
  * Main Express application for the Work Share activity API.
@@ -65,6 +72,16 @@ async function findLatestVsixFile(): Promise<string | undefined> {
 
 // Enable CORS for VS Code extension
 app.use(cors());
+app.use(express.json());
+app.use(cookieParser());
+
+// Silently refresh JWT tokens that are close to expiry.
+app.use(silentRefresh);
+
+// Auth, team, and SSH key routes.
+app.use(authRoutes);
+app.use(teamRoutes);
+app.use(sshKeyRoutes);
 
 // Setup routing-controllers
 useExpressServer(app, {
