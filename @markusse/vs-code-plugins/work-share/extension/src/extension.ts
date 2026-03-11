@@ -6,8 +6,8 @@ import {
     ConflictTreeDataProvider,
     FileTreeDataProvider,
     UserTreeDataProvider,
-    WorkStatusDataProvider,
 } from "./fileTreeDataProvider";
+import { WorkShareLoginView } from "./workShareLoginView";
 
 let fileActivityTracker: FileActivityTracker | undefined;
 
@@ -59,7 +59,7 @@ async function updateTrackingContext(): Promise<void> {
 /**
  * Activates the Work Share extension and registers commands, tracking, and tree view wiring.
  */
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     console.log("Work Share extension is now active");
 
     const outputChannel = vscode.window.createOutputChannel("Work Share");
@@ -125,8 +125,36 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize API client
     const apiClient = new ApiClient(logger);
 
+    // Restore a previously-stored auth token so users stay signed in across sessions.
+    const storedToken    = await context.secrets.get("workShare.authToken");
+    const storedUsername = await context.secrets.get("workShare.authUsername");
+    if (storedToken && storedUsername) {
+        apiClient.setAuthToken(storedToken, storedUsername);
+        logger.info("Restored stored auth token.", { username: storedUsername });
+    }
+
     // Initialize file activity tracker
     fileActivityTracker = new FileActivityTracker(context, apiClient, logger);
+
+    // Work Share Status webview panel (login form + connection / sharing status).
+    const loginView = new WorkShareLoginView(
+        context.extensionUri,
+        apiClient,
+        fileActivityTracker,
+        async (token, username) => {
+            await context.secrets.store("workShare.authToken",    token);
+            await context.secrets.store("workShare.authUsername", username);
+            logger.info("Auth token stored.", { username });
+        },
+        async () => {
+            await context.secrets.delete("workShare.authToken");
+            await context.secrets.delete("workShare.authUsername");
+            logger.info("Auth token cleared.");
+        },
+    );
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(WorkShareLoginView.viewType, loginView),
+    );
 
     // Initialize Work Share Activity tree view
     const treeDataProvider = new FileTreeDataProvider(apiClient, fileActivityTracker, logger);
@@ -135,26 +163,6 @@ export function activate(context: vscode.ExtensionContext) {
         showCollapseAll: true,
     });
     context.subscriptions.push(treeView);
-
-    const statusTreeDataProvider = new WorkStatusDataProvider(apiClient, fileActivityTracker, logger);
-    const statusTreeView = vscode.window.createTreeView("workShareStatus", {
-        treeDataProvider: statusTreeDataProvider,
-        showCollapseAll: true,
-    });
-    context.subscriptions.push(statusTreeView);
-
-    // Handle checkbox state changes for sharing status
-    context.subscriptions.push(
-        statusTreeView.onDidChangeCheckboxState((event) => {
-            for (const [item] of event.items) {
-                // Check if this is the sharing status item
-                if (item && "kind" in item && item.kind === "sharing-status") {
-                    // Execute toggle tracking command when checkbox state changes
-                    void vscode.commands.executeCommand("work-share.toggleTracking");
-                }
-            }
-        }),
-    );
 
     // Auto-reveal active file when editor changes
     context.subscriptions.push(
@@ -287,6 +295,24 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register commands
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.login", async () => {
+            // Open the Work Share sidebar and focus the status panel where the login form lives.
+            await vscode.commands.executeCommand("workbench.view.extension.work-share");
+            await vscode.commands.executeCommand("workShareStatus.focus");
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.logout", async () => {
+            await apiClient.logout();
+            await context.secrets.delete("workShare.authToken");
+            await context.secrets.delete("workShare.authUsername");
+            loginView.refresh();
+            vscode.window.showInformationMessage("Work Share: Signed out.");
+        }),
+    );
+
     context.subscriptions.push(
         vscode.commands.registerCommand("work-share.showActiveFileConflicts", async () => {
             await vscode.commands.executeCommand("workbench.view.extension.work-share");

@@ -2,10 +2,27 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import db from "../database/db";
-import { issueToken, requireAuth, AuthenticatedRequest } from "../middleware/auth";
+import {
+    issueToken,
+    requireAuth,
+    AuthenticatedRequest,
+    getAuthTokenFromRequest,
+    SESSION_COOKIE_NAME,
+    TOKEN_TTL_SECONDS,
+} from "../middleware/auth";
 
 const router = Router();
 const BCRYPT_ROUNDS = 12;
+
+function setSessionCookie(res: Response, token: string): void {
+    res.cookie(SESSION_COOKIE_NAME, token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        maxAge: TOKEN_TTL_SECONDS * 1000,
+        path: "/",
+    });
+}
 
 /** POST /auth/register — create a new user account. */
 router.post("/auth/register", (req: Request, res: Response) => {
@@ -27,20 +44,22 @@ router.post("/auth/register", (req: Request, res: Response) => {
         return;
     }
 
-    const existing = db
-        .prepare("SELECT username FROM users WHERE username = ? OR email = ?")
-        .get(username, email);
+    const existing = db.prepare("SELECT username FROM users WHERE username = ? OR email = ?").get(username, email);
     if (existing) {
         res.status(409).json({ error: "Username or email already in use." });
         return;
     }
 
     const passwordHash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
-    db.prepare(
-        "INSERT INTO users (username, full_name, email, password_hash) VALUES (?, ?, ?, ?)"
-    ).run(username, fullName, email, passwordHash);
+    db.prepare("INSERT INTO users (username, full_name, email, password_hash) VALUES (?, ?, ?, ?)").run(
+        username,
+        fullName,
+        email,
+        passwordHash,
+    );
 
     const token = issueToken(username);
+    setSessionCookie(res, token);
     res.status(201).json({ token, username });
 });
 
@@ -52,9 +71,9 @@ router.post("/auth/login", (req: Request, res: Response) => {
         return;
     }
 
-    const user = db
-        .prepare("SELECT username, password_hash FROM users WHERE username = ?")
-        .get(username) as { username: string; password_hash: string } | undefined;
+    const user = db.prepare("SELECT username, password_hash FROM users WHERE username = ?").get(username) as
+        | { username: string; password_hash: string }
+        | undefined;
 
     // Use constant-time comparison even when user not found to avoid timing attacks.
     const hashToCheck = user?.password_hash ?? "$2b$12$invalidhashfortimingprotection000000000000000000";
@@ -66,22 +85,30 @@ router.post("/auth/login", (req: Request, res: Response) => {
     }
 
     const token = issueToken(username);
+    setSessionCookie(res, token);
     res.json({ token, username });
 });
 
 /** POST /auth/logout — revoke the current session token. */
 router.post("/auth/logout", requireAuth, (req: AuthenticatedRequest, res: Response) => {
-    const authHeader = req.headers.authorization!;
-    const token = authHeader.slice(7);
+    const token = getAuthTokenFromRequest(req);
+    if (!token) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
+    }
+
     try {
-        const payload = jwt.verify(
-            token,
-            process.env.JWT_SECRET || "dev-secret-change-in-production",
-        ) as JwtPayload;
+        const payload = jwt.verify(token, process.env.JWT_SECRET || "dev-secret-change-in-production") as JwtPayload;
         db.prepare("DELETE FROM sessions WHERE token_id = ?").run(payload.jti as string);
     } catch {
         // Token already invalid — session was either expired or already deleted.
     }
+    res.clearCookie(SESSION_COOKIE_NAME, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/",
+    });
     res.json({ success: true });
 });
 
@@ -89,7 +116,9 @@ router.post("/auth/logout", requireAuth, (req: AuthenticatedRequest, res: Respon
 router.get("/auth/me", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const user = db
         .prepare("SELECT username, full_name, email, created_at FROM users WHERE username = ?")
-        .get(req.authenticatedUsername) as { username: string; full_name: string; email: string; created_at: string } | undefined;
+        .get(req.authenticatedUsername) as
+        | { username: string; full_name: string; email: string; created_at: string }
+        | undefined;
 
     if (!user) {
         res.status(404).json({ error: "User not found." });
@@ -114,9 +143,9 @@ router.patch("/auth/me", requireAuth, (req: AuthenticatedRequest, res: Response)
             res.status(400).json({ error: "currentPassword is required to change password." });
             return;
         }
-        const user = db
-            .prepare("SELECT password_hash FROM users WHERE username = ?")
-            .get(username) as { password_hash: string } | undefined;
+        const user = db.prepare("SELECT password_hash FROM users WHERE username = ?").get(username) as
+            | { password_hash: string }
+            | undefined;
 
         if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
             res.status(401).json({ error: "Current password is incorrect." });

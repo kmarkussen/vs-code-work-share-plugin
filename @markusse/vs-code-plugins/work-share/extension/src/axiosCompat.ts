@@ -19,6 +19,8 @@ export interface AxiosInstance {
         },
     ): Promise<AxiosResponse<T>>;
     post<T>(url: string, data?: unknown): Promise<AxiosResponse<T>>;
+    /** Mutable default headers merged into every request (e.g. for Bearer tokens). */
+    headers: Record<string, string>;
 }
 
 interface CreateConfig {
@@ -75,6 +77,9 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 function create(config: CreateConfig): AxiosInstance {
+    // Mutable copy so callers can inject/remove headers (e.g. Authorization) at runtime.
+    const clientHeaders: Record<string, string> = { ...(config.headers ?? {}) };
+
     const request = async <T>(
         method: "GET" | "POST",
         url: string,
@@ -93,7 +98,7 @@ function create(config: CreateConfig): AxiosInstance {
                 headers: {
                     // eslint-disable-next-line @typescript-eslint/naming-convention
                     "Content-Type": "application/json",
-                    ...(config.headers ?? {}),
+                    ...clientHeaders,
                 },
                 body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
                 signal: controller.signal,
@@ -105,6 +110,7 @@ function create(config: CreateConfig): AxiosInstance {
                     typeof data === "object" && data && "message" in data ?
                         String((data as { message?: unknown }).message ?? `HTTP ${response.status}`)
                     :   `HTTP ${response.status}`;
+
                 throw new FetchAxiosError(message, {
                     status: response.status,
                     data,
@@ -137,6 +143,7 @@ function create(config: CreateConfig): AxiosInstance {
         post: <T>(url: string, body?: unknown) => {
             return request<T>("POST", url, body);
         },
+        headers: clientHeaders,
     };
 }
 

@@ -67,6 +67,16 @@
         "command": "work-share.selectUpstreamBranch",
         "title": "Work Share: Select Upstream Branch",
         "icon": "$(git-branch)"
+      },
+      {
+        "command": "work-share.login",
+        "title": "Work Share: Sign In",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "work-share.logout",
+        "title": "Work Share: Sign Out",
+        "icon": "$(sign-out)"
       }
     ],
     "menus": {
@@ -172,19 +182,24 @@
       "work-share": [
         {
           "id": "workShareStatus",
-          "name": "Work Share Status"
+          "name": "Work Share Status",
+          "type": "webview",
+          "icon": "$(account)"
         },
         {
           "id": "workShareActivity",
-          "name": "File Activity"
+          "name": "File Activity",
+          "icon": "$(list-tree)"
         },
         {
           "id": "workShareConflicts",
-          "name": "Conflicts"
+          "name": "Conflicts",
+          "icon": "$(warning)"
         },
         {
           "id": "workShareUsers",
-          "name": "Team Activity"
+          "name": "Team Activity",
+          "icon": "$(organization)"
         }
       ]
     }

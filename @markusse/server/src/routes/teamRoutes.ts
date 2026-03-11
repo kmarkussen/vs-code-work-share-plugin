@@ -4,8 +4,8 @@ import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 
 const router = Router();
 
-/** POST /teams — create a new team. */
-router.post("/teams", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** POST /api/teams — create a new team. */
+router.post("/api/teams", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.body ?? {};
     const username = req.authenticatedUsername!;
 
@@ -24,42 +24,58 @@ router.post("/teams", requireAuth, (req: AuthenticatedRequest, res: Response) =>
     const createTeam = db.transaction(() => {
         db.prepare("INSERT INTO teams (team_name, owner_username) VALUES (?, ?)").run(normalized, username);
         // Owner is automatically an active member.
-        db.prepare(
-            "INSERT INTO team_members (team_name, username, status, joined_at) VALUES (?, ?, 'active', ?)"
-        ).run(normalized, username, new Date().toISOString());
+        db.prepare("INSERT INTO team_members (team_name, username, status, joined_at) VALUES (?, ?, 'active', ?)").run(
+            normalized,
+            username,
+            new Date().toISOString(),
+        );
         // Sharing enabled by default.
-        db.prepare(
-            "INSERT INTO team_sharing (team_name, username, sharing_enabled) VALUES (?, ?, 1)"
-        ).run(normalized, username);
+        db.prepare("INSERT INTO team_sharing (team_name, username, sharing_enabled) VALUES (?, ?, 1)").run(
+            normalized,
+            username,
+        );
     });
     createTeam();
 
     res.status(201).json({ teamName: normalized, ownerUsername: username });
 });
 
-/** GET /teams — list all teams the authenticated user is an active member of. */
-router.get("/teams", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** GET /api/teams — list all teams the authenticated user is an active member of. */
+router.get("/api/teams", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const username = req.authenticatedUsername!;
-    const teams = db.prepare(`
-        SELECT t.team_name, t.owner_username, t.created_at,
-               (SELECT COUNT(*) FROM team_members tm2 WHERE tm2.team_name = t.team_name AND tm2.status = 'active') AS member_count
+    const teams = db
+        .prepare(
+            `
+        SELECT t.team_name AS teamName,
+               t.owner_username AS ownerUsername,
+               t.created_at AS createdAt,
+               (SELECT COUNT(*) FROM team_members tm2 WHERE tm2.team_name = t.team_name AND tm2.status = 'active') AS memberCount
         FROM teams t
         JOIN team_members tm ON t.team_name = tm.team_name
         WHERE tm.username = ? AND tm.status = 'active'
         ORDER BY t.team_name
-    `).all(username) as Array<{ team_name: string; owner_username: string; created_at: string; member_count: number }>;
+    `,
+        )
+        .all(username) as Array<{
+        teamName: string;
+        ownerUsername: string;
+        createdAt: string;
+        memberCount: number;
+    }>;
 
-    res.json(teams.map((t) => ({
-        teamName: t.team_name,
-        ownerUsername: t.owner_username,
-        createdAt: t.created_at,
-        memberCount: t.member_count,
-        isOwner: t.owner_username === username,
-    })));
+    res.json(
+        teams.map((t) => ({
+            teamName: t.teamName,
+            ownerUsername: t.ownerUsername,
+            createdAt: t.createdAt,
+            memberCount: t.memberCount,
+            isOwner: t.ownerUsername === username,
+        })),
+    );
 });
 
-/** GET /teams/:teamName — get team details including member list with sharing status. */
-router.get("/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** GET /api/teams/:teamName — get team details including member list with sharing status. */
+router.get("/api/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -74,57 +90,70 @@ router.get("/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Res
     }
 
     const team = db
-        .prepare("SELECT team_name, owner_username, created_at FROM teams WHERE team_name = ?")
-        .get(teamName) as { team_name: string; owner_username: string; created_at: string } | undefined;
+        .prepare(
+            "SELECT team_name AS teamName, owner_username AS ownerUsername, created_at AS createdAt FROM teams WHERE team_name = ?",
+        )
+        .get(teamName) as { teamName: string; ownerUsername: string; createdAt: string } | undefined;
 
     if (!team) {
         res.status(404).json({ error: "Team not found." });
         return;
     }
 
-    const members = db.prepare(`
-        SELECT tm.username, u.full_name, tm.status, tm.joined_at,
-               COALESCE(ts.sharing_enabled, 1) AS sharing_enabled,
-               ts.disabled_at
+    const members = db
+        .prepare(
+            `
+        SELECT tm.username,
+               u.full_name AS fullName,
+               tm.status,
+               tm.joined_at AS joinedAt,
+               COALESCE(ts.sharing_enabled, 1) AS sharingEnabled,
+               ts.disabled_at AS disabledAt
         FROM team_members tm
         JOIN users u ON tm.username = u.username
         LEFT JOIN team_sharing ts ON ts.team_name = tm.team_name AND ts.username = tm.username
         WHERE tm.team_name = ?
         ORDER BY tm.joined_at
-    `).all(teamName) as Array<{
-        username: string; full_name: string; status: string; joined_at: string | null;
-        sharing_enabled: number; disabled_at: string | null;
+    `,
+        )
+        .all(teamName) as Array<{
+        username: string;
+        fullName: string;
+        status: string;
+        joinedAt: string | null;
+        sharingEnabled: number;
+        disabledAt: string | null;
     }>;
 
     res.json({
-        teamName: team.team_name,
-        ownerUsername: team.owner_username,
-        createdAt: team.created_at,
+        teamName: team.teamName,
+        ownerUsername: team.ownerUsername,
+        createdAt: team.createdAt,
         members: members.map((m) => ({
             username: m.username,
-            fullName: m.full_name,
+            fullName: m.fullName,
             status: m.status,
-            joinedAt: m.joined_at,
-            sharingEnabled: m.sharing_enabled === 1,
-            disabledAt: m.disabled_at,
+            joinedAt: m.joinedAt,
+            sharingEnabled: m.sharingEnabled === 1,
+            disabledAt: m.disabledAt,
         })),
     });
 });
 
-/** DELETE /teams/:teamName — owner deletes the team. */
-router.delete("/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** DELETE /api/teams/:teamName — owner deletes the team. */
+router.delete("/api/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
-    const team = db
-        .prepare("SELECT owner_username FROM teams WHERE team_name = ?")
-        .get(teamName) as { owner_username: string } | undefined;
+    const team = db.prepare("SELECT owner_username AS ownerUsername FROM teams WHERE team_name = ?").get(teamName) as
+        | { ownerUsername: string }
+        | undefined;
 
     if (!team) {
         res.status(404).json({ error: "Team not found." });
         return;
     }
-    if (team.owner_username !== username) {
+    if (team.ownerUsername !== username) {
         res.status(403).json({ error: "Only the team owner can delete the team." });
         return;
     }
@@ -133,8 +162,8 @@ router.delete("/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: 
     res.json({ success: true });
 });
 
-/** POST /teams/:teamName/members — owner adds an existing user by username or email. */
-router.post("/teams/:teamName/members", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** POST /api/teams/:teamName/members — owner adds an existing user by username or email. */
+router.post("/api/teams/:teamName/members", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const { usernameOrEmail } = req.body ?? {};
     const username = req.authenticatedUsername!;
@@ -144,15 +173,15 @@ router.post("/teams/:teamName/members", requireAuth, (req: AuthenticatedRequest,
         return;
     }
 
-    const team = db
-        .prepare("SELECT owner_username FROM teams WHERE team_name = ?")
-        .get(teamName) as { owner_username: string } | undefined;
+    const team = db.prepare("SELECT owner_username AS ownerUsername FROM teams WHERE team_name = ?").get(teamName) as
+        | { ownerUsername: string }
+        | undefined;
 
     if (!team) {
         res.status(404).json({ error: "Team not found." });
         return;
     }
-    if (team.owner_username !== username) {
+    if (team.ownerUsername !== username) {
         res.status(403).json({ error: "Only the team owner can add members." });
         return;
     }
@@ -180,33 +209,42 @@ router.post("/teams/:teamName/members", requireAuth, (req: AuthenticatedRequest,
         return;
     }
 
-    db.prepare(
-        "INSERT INTO team_members (team_name, username, status) VALUES (?, ?, 'pending')"
-    ).run(teamName, target.username);
+    db.prepare("INSERT INTO team_members (team_name, username, status) VALUES (?, ?, 'pending')").run(
+        teamName,
+        target.username,
+    );
 
     res.status(201).json({ teamName, invitedUsername: target.username, status: "pending" });
 });
 
-/** GET /teams/invitations — list pending invitations for the authenticated user. */
-router.get("/invitations", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** GET /api/invitations — list pending invitations for the authenticated user. */
+router.get("/api/invitations", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const username = req.authenticatedUsername!;
-    const invitations = db.prepare(`
-        SELECT tm.team_name, t.owner_username, tm.invited_at
+    const invitations = db
+        .prepare(
+            `
+        SELECT tm.team_name AS teamName,
+               t.owner_username AS ownerUsername,
+               tm.invited_at AS invitedAt
         FROM team_members tm
         JOIN teams t ON t.team_name = tm.team_name
         WHERE tm.username = ? AND tm.status = 'pending'
         ORDER BY tm.invited_at DESC
-    `).all(username) as Array<{ team_name: string; owner_username: string; invited_at: string }>;
+    `,
+        )
+        .all(username) as Array<{ teamName: string; ownerUsername: string; invitedAt: string }>;
 
-    res.json(invitations.map((i) => ({
-        teamName: i.team_name,
-        ownerUsername: i.owner_username,
-        invitedAt: i.invited_at,
-    })));
+    res.json(
+        invitations.map((i) => ({
+            teamName: i.teamName,
+            ownerUsername: i.ownerUsername,
+            invitedAt: i.invitedAt,
+        })),
+    );
 });
 
-/** POST /invitations/:teamName/accept — accept a pending invitation. */
-router.post("/invitations/:teamName/accept", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** POST /api/invitations/:teamName/accept — accept a pending invitation. */
+router.post("/api/invitations/:teamName/accept", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -220,21 +258,24 @@ router.post("/invitations/:teamName/accept", requireAuth, (req: AuthenticatedReq
     }
 
     const acceptInvitation = db.transaction(() => {
-        db.prepare(
-            "UPDATE team_members SET status = 'active', joined_at = ? WHERE team_name = ? AND username = ?"
-        ).run(new Date().toISOString(), teamName, username);
+        db.prepare("UPDATE team_members SET status = 'active', joined_at = ? WHERE team_name = ? AND username = ?").run(
+            new Date().toISOString(),
+            teamName,
+            username,
+        );
         // Insert default sharing record for the new member.
-        db.prepare(
-            "INSERT OR IGNORE INTO team_sharing (team_name, username, sharing_enabled) VALUES (?, ?, 1)"
-        ).run(teamName, username);
+        db.prepare("INSERT OR IGNORE INTO team_sharing (team_name, username, sharing_enabled) VALUES (?, ?, 1)").run(
+            teamName,
+            username,
+        );
     });
     acceptInvitation();
 
     res.json({ teamName, status: "active" });
 });
 
-/** POST /invitations/:teamName/decline — decline or leave a team. */
-router.post("/invitations/:teamName/decline", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** POST /api/invitations/:teamName/decline — decline or leave a team. */
+router.post("/api/invitations/:teamName/decline", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -248,11 +289,11 @@ router.post("/invitations/:teamName/decline", requireAuth, (req: AuthenticatedRe
     }
 
     // Prevent the owner from leaving their own team; they must delete it instead.
-    const team = db
-        .prepare("SELECT owner_username FROM teams WHERE team_name = ?")
-        .get(teamName) as { owner_username: string } | undefined;
+    const team = db.prepare("SELECT owner_username AS ownerUsername FROM teams WHERE team_name = ?").get(teamName) as
+        | { ownerUsername: string }
+        | undefined;
 
-    if (team?.owner_username === username) {
+    if (team?.ownerUsername === username) {
         res.status(400).json({ error: "Team owner cannot leave. Delete the team instead." });
         return;
     }
@@ -263,8 +304,8 @@ router.post("/invitations/:teamName/decline", requireAuth, (req: AuthenticatedRe
     res.json({ success: true });
 });
 
-/** PATCH /teams/:teamName/sharing — enable or disable sharing for the authenticated user in a team. */
-router.patch("/teams/:teamName/sharing", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+/** PATCH /api/teams/:teamName/sharing — enable or disable sharing for the authenticated user in a team. */
+router.patch("/api/teams/:teamName/sharing", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const { enabled } = req.body ?? {};
     const username = req.authenticatedUsername!;
@@ -284,11 +325,13 @@ router.patch("/teams/:teamName/sharing", requireAuth, (req: AuthenticatedRequest
     }
 
     const disabledAt = enabled ? null : new Date().toISOString();
-    db.prepare(`
+    db.prepare(
+        `
         INSERT INTO team_sharing (team_name, username, sharing_enabled, disabled_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(team_name, username) DO UPDATE SET sharing_enabled = excluded.sharing_enabled, disabled_at = excluded.disabled_at
-    `).run(teamName, username, enabled ? 1 : 0, disabledAt);
+    `,
+    ).run(teamName, username, enabled ? 1 : 0, disabledAt);
 
     res.json({ teamName, username, sharingEnabled: enabled, disabledAt });
 });

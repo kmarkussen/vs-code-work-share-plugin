@@ -10,12 +10,14 @@ router.get("/profile/ssh-keys", requireAuth, (req: AuthenticatedRequest, res: Re
         .prepare("SELECT id, label, public_key, created_at FROM ssh_keys WHERE username = ? ORDER BY created_at")
         .all(req.authenticatedUsername) as Array<{ id: number; label: string; public_key: string; created_at: string }>;
 
-    res.json(keys.map((k) => ({
-        id: k.id,
-        label: k.label,
-        publicKey: k.public_key,
-        createdAt: k.created_at,
-    })));
+    res.json(
+        keys.map((k) => ({
+            id: k.id,
+            label: k.label,
+            publicKey: k.public_key,
+            createdAt: k.created_at,
+        })),
+    );
 });
 
 /** POST /profile/ssh-keys — add a new SSH key. */
@@ -48,9 +50,7 @@ router.delete("/profile/ssh-keys/:id", requireAuth, (req: AuthenticatedRequest, 
         return;
     }
 
-    const key = db
-        .prepare("SELECT username FROM ssh_keys WHERE id = ?")
-        .get(id) as { username: string } | undefined;
+    const key = db.prepare("SELECT username FROM ssh_keys WHERE id = ?").get(id) as { username: string } | undefined;
 
     if (!key) {
         res.status(404).json({ error: "SSH key not found." });

@@ -3,9 +3,11 @@
 Last updated: 2026-03-11 (SQLite Docker volume confirmed)
 
 ## Context
+
 We are revising Work Share server design goals around user accounts, SSH keys, team organization, and team-scoped patch sharing.
 
 ## Confirmed Requirements (from user)
+
 - Anyone may create a user account.
 - The server stores each user's username, full name, email, password (hashed), and SSH public keys.
 - A user may register multiple SSH keys (e.g. one per device).
@@ -37,8 +39,8 @@ We are revising Work Share server design goals around user accounts, SSH keys, t
 - Historical patch information should not be sent to the plugin when it is considered stale.
 - A patch is considered stale when the same user has submitted a newer patch for the same file.
 - When a user disables sharing with a team, the server records a timestamp of that event.
-  - Patches uploaded before the disable timestamp remain visible to teammates.
-  - Patches uploaded after the disable timestamp are hidden from teammates.
+    - Patches uploaded before the disable timestamp remain visible to teammates.
+    - Patches uploaded after the disable timestamp are hidden from teammates.
 - Users can belong to more than one team.
 - Any user may create one or more teams.
 - Teams are identified by team name.
@@ -53,6 +55,7 @@ We are revising Work Share server design goals around user accounts, SSH keys, t
 - The website uses a simple server-side session (HttpOnly cookie) — no complex token flow needed for the web UI.
 
 ## Decisions Log
+
 - 2026-03-11: Created design memory file in repository root to track decisions and unresolved questions.
 - 2026-03-11: Initial idea was no authentication in phase 1.
 - 2026-03-11: Username will be the unique user identifier.
@@ -87,9 +90,11 @@ We are revising Work Share server design goals around user accounts, SSH keys, t
 - 2026-03-11: WebSocket events are scoped server-side — the server pushes events only to members of the relevant team.
 
 ## Open Clarifications
+
 - Are there any other clarifications needed, or are we ready to produce a full design document and begin implementation planning?
 
 ## Progress
+
 - Captured initial requirements.
 - Clarification Q1 superseded by later decision: use password-based authentication.
 - Clarification Q2 answered: username is the unique identifier.
@@ -120,4 +125,5 @@ We are revising Work Share server design goals around user accounts, SSH keys, t
 - Clarification Q22 answered: SQLite database mounted as a Docker volume.
 
 ## Status
+
 Clarification phase complete. Ready to produce full design document and begin implementation planning when directed.

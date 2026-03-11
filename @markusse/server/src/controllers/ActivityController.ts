@@ -220,7 +220,9 @@ export class ActivityController {
         const visibleUsers = getVisibleTeammates(viewerUsername);
         // The viewer also sees their own data.
         visibleUsers.add(viewerUsername);
-        const allActivities = Array.from(activityStore.values()).flat().filter((a) => visibleUsers.has(a.userName));
+        const allActivities = Array.from(activityStore.values())
+            .flat()
+            .filter((a) => visibleUsers.has(a.userName));
         const allPatches = Array.from(patchStore.values()).filter((p) => visibleUsers.has(p.userName));
         const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
@@ -323,6 +325,9 @@ export class ActivityController {
         @QueryParam("repositoryFilePath") repositoryFilePath?: string,
         @QueryParam("userName") userName?: string,
         @QueryParam("upstreamBranch") upstreamBranch?: string,
+        @QueryParam("changeType") changeType?: "pending" | "working",
+        @QueryParam("workingState") workingState?: "staged" | "unstaged",
+        @QueryParam("commitSha") commitSha?: string,
     ): GetPatchesResponse {
         const viewerUsername = req.authenticatedUsername!;
         const visibleUsers = getVisibleTeammates(viewerUsername);
@@ -347,6 +352,18 @@ export class ActivityController {
             patches = patches.filter(
                 (patch) => normalizeUpstreamBranch(patch.upstreamBranch) === normalizedFilterBranch,
             );
+        }
+
+        if (changeType) {
+            patches = patches.filter((patch) => patch.changeType === changeType);
+        }
+
+        if (workingState) {
+            patches = patches.filter((patch) => patch.workingState === workingState);
+        }
+
+        if (commitSha) {
+            patches = patches.filter((patch) => patch.commitSha === commitSha);
         }
 
         patches.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
@@ -396,7 +413,10 @@ export class ActivityController {
      */
     @Post("/patches/sync")
     @UseBefore(requireAuth)
-    async synchronizePatches(@Req() req: AuthenticatedRequest, @Body() body: PatchSyncRequest): Promise<PostPatchesResponse> {
+    async synchronizePatches(
+        @Req() req: AuthenticatedRequest,
+        @Body() body: PatchSyncRequest,
+    ): Promise<PostPatchesResponse> {
         const authenticatedUsername = req.authenticatedUsername!;
         const synchronizedPatches = Array.isArray(body?.patches) ? body.patches : [];
         const resolvedRepositoryRemoteUrl =
@@ -487,7 +507,9 @@ export class ActivityController {
         const visibleUsers = getVisibleTeammates(viewerUsername);
         visibleUsers.add(viewerUsername);
 
-        let activities = Array.from(activityStore.values()).flat().filter((a) => visibleUsers.has(a.userName));
+        let activities = Array.from(activityStore.values())
+            .flat()
+            .filter((a) => visibleUsers.has(a.userName));
         const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         if (repositoryRemoteUrl) {
@@ -517,7 +539,10 @@ export class ActivityController {
      */
     @Post("/activities")
     @UseBefore(requireAuth)
-    async receiveActivities(@Req() req: AuthenticatedRequest, @Body() body: ActivityBatchDto): Promise<PostActivitiesResponse> {
+    async receiveActivities(
+        @Req() req: AuthenticatedRequest,
+        @Body() body: ActivityBatchDto,
+    ): Promise<PostActivitiesResponse> {
         const authenticatedUsername = req.authenticatedUsername!;
         console.log(`Received ${body.activities.length} activities from ${authenticatedUsername}`);
 

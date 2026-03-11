@@ -3,8 +3,7 @@ import path from "path";
 import fs from "fs";
 
 /** Path to the SQLite file. Override via DATABASE_PATH env var for Docker volume mounts. */
-const DATABASE_PATH =
-    process.env.DATABASE_PATH || path.join(process.cwd(), "data", "work-share.db");
+const DATABASE_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "work-share.db");
 
 // Ensure the data directory exists before opening the database file.
 const dbDir = path.dirname(DATABASE_PATH);

@@ -11,6 +11,24 @@ export interface AuthenticatedRequest extends Request {
 }
 
 /**
+ * Session cookie name for website authentication.
+ */
+export const SESSION_COOKIE_NAME = "workShareSession";
+
+/**
+ * Extracts a JWT from either Authorization header or HttpOnly session cookie.
+ */
+export function getAuthTokenFromRequest(req: Request): string | undefined {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+        return authHeader.slice(7);
+    }
+
+    const cookieToken = (req as Request & { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE_NAME];
+    return typeof cookieToken === "string" && cookieToken.length > 0 ? cookieToken : undefined;
+}
+
+/**
  * Signs a new JWT session token for the given username.
  * The token ID is stored in the sessions table so it can be revoked.
  */
@@ -18,9 +36,11 @@ export function issueToken(username: string): string {
     const tokenId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + TOKEN_TTL_SECONDS * 1000).toISOString();
 
-    db.prepare(
-        "INSERT INTO sessions (token_id, username, expires_at) VALUES (?, ?, ?)"
-    ).run(tokenId, username, expiresAt);
+    db.prepare("INSERT INTO sessions (token_id, username, expires_at) VALUES (?, ?, ?)").run(
+        tokenId,
+        username,
+        expiresAt,
+    );
 
     return jwt.sign({ sub: username, jti: tokenId }, JWT_SECRET, { expiresIn: TOKEN_TTL_SECONDS });
 }
@@ -29,19 +49,14 @@ export function issueToken(username: string): string {
  * Verifies a bearer token and attaches the username to the request.
  * Rejects with 401 if the token is missing, invalid, expired, or revoked.
  */
-export const requireAuth: RequestHandler = (
-    req: Request,
-    res: Response,
-    next: NextFunction,
-): void => {
+export const requireAuth: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     const authenticatedRequest = req as AuthenticatedRequest;
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
+    const token = getAuthTokenFromRequest(req);
+    if (!token) {
         res.status(401).json({ error: "Authentication required." });
         return;
     }
 
-    const token = authHeader.slice(7);
     let payload: JwtPayload;
     try {
         payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
@@ -69,17 +84,12 @@ export const requireAuth: RequestHandler = (
  * returns a new JWT in the `X-Refresh-Token` response header so clients
  * can swap it out without prompting the user.
  */
-export const silentRefresh: RequestHandler = (
-    req: Request,
-    res: Response,
-    next: NextFunction,
-): void => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
+export const silentRefresh: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
+    const token = getAuthTokenFromRequest(req);
+    if (!token) {
         return next();
     }
 
-    const token = authHeader.slice(7);
     let payload: JwtPayload;
     try {
         payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
@@ -103,6 +113,13 @@ export const silentRefresh: RequestHandler = (
         // Delete the old session after issuing a new one.
         db.prepare("DELETE FROM sessions WHERE token_id = ?").run(payload.jti as string);
         res.setHeader("X-Refresh-Token", newToken);
+        res.cookie(SESSION_COOKIE_NAME, newToken, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            maxAge: TOKEN_TTL_SECONDS * 1000,
+            path: "/",
+        });
     }
 
     next();

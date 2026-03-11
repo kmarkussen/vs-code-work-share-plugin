@@ -26,6 +26,16 @@ export class ApiClient {
     private unconfiguredWarnings = new Set<string>();
     private connectionIssue: ConnectionIssue | undefined;
 
+    /** Stored Bearer token, persisted across client re-initialisation. */
+    private authToken: string | undefined;
+    /** True when the server has rejected a request with HTTP 401. */
+    private _authRequired = false;
+    /** Username returned by the last successful login call. */
+    private _authenticatedUsername: string | undefined;
+
+    private _onDidChangeAuthState: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
+    public readonly onDidChangeAuthState: vscode.Event<void> = this._onDidChangeAuthState.event;
+
     private _onDidChangeData: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
     public readonly onDidChangeData: vscode.Event<void> = this._onDidChangeData.event;
 
@@ -83,6 +93,12 @@ export class ApiClient {
             },
         });
 
+        // Restore the stored auth token so re-initialisation on config change
+        // does not require signing in again.
+        if (this.authToken) {
+              this.client.headers["Authorization"] = `Bearer ${this.authToken}`;
+        }
+
         this.logger?.info("API client configured.", { apiServerUrl });
     }
 
@@ -111,6 +127,93 @@ export class ApiClient {
         if (hadIssue) {
             this._onDidChangeData.fire();
         }
+    }
+
+    /** Returns true when the last request was rejected with HTTP 401. */
+    public isAuthRequired(): boolean {
+        return this._authRequired;
+    }
+
+    /** Returns the username from the last successful login, if any. */
+    public getAuthenticatedUsername(): string | undefined {
+        return this._authenticatedUsername;
+    }
+
+    /**
+     * Stores or clears a Bearer token.  Updates the Axios default headers and
+     * fires auth-state / data-change events so dependent views can refresh.
+     */
+    public setAuthToken(token: string | undefined, username?: string): void {
+        this.authToken = token;
+        const wasRequired = this._authRequired;
+        this._authRequired = !token;
+        this._authenticatedUsername = token ? (username ?? this._authenticatedUsername) : undefined;
+
+        if (this.client) {
+            if (token) {
+                 this.client.headers["Authorization"] = `Bearer ${token}`;
+            } else {
+                 delete this.client.headers["Authorization"];
+            }
+        }
+
+        if (wasRequired !== this._authRequired) {
+            this._onDidChangeAuthState.fire();
+        }
+        this._onDidChangeData.fire();
+    }
+
+    /**
+     * Calls POST /auth/login and stores the returned token on success.
+     * Throws on HTTP 4xx/5xx so callers can surface the error message.
+     */
+    public async login(username: string, password: string): Promise<{ token: string; username: string }> {
+        if (!this.client) {
+            throw new Error("API client is not configured. Set workShare.apiServerUrl first.");
+        }
+        const response = await this.client.post<{ token: string; username: string }>("/auth/login", {
+            username,
+            password,
+        });
+        const { token, username: returnedUsername } = response.data;
+        this.setAuthToken(token, returnedUsername);
+        this.markConnectionHealthy();
+        return { token, username: returnedUsername };
+    }
+
+    /**
+     * Calls POST /auth/logout (best-effort) and clears the stored token.
+     */
+    public async logout(): Promise<void> {
+        if (this.client && this.authToken) {
+            try {
+                await this.client.post("/auth/logout");
+            } catch {
+                // Best-effort — clear the token regardless of server response.
+            }
+        }
+        this.setAuthToken(undefined);
+    }
+
+    /**
+     * Marks the session as requiring authentication and clears any connectivity
+     * error so the auth banner is displayed instead of a generic error message.
+     */
+    private markAuthRequired(): void {
+        const stateChanged = !this._authRequired;
+        this._authRequired = true;
+        this._authenticatedUsername = undefined;
+        // Auth failure is a distinct state — do not conflate with a network error.
+        this.connectionIssue = undefined;
+        if (stateChanged) {
+            this._onDidChangeAuthState.fire();
+            this._onDidChangeData.fire();
+        }
+    }
+
+    /** Returns true when the error is an HTTP 401 Unauthorised response. */
+    private isUnauthorized(error: unknown): boolean {
+        return axios.isAxiosError(error) && error.response?.status === 401;
     }
 
     private markConnectionError(message: string): void {
@@ -174,6 +277,11 @@ export class ApiClient {
             this.markConnectionHealthy();
             this.logger?.info("POST /activities succeeded.", { count: payload.length });
         } catch (error) {
+            if (this.isUnauthorized(error)) {
+                this.markAuthRequired();
+                this.logger?.warn("POST /activities rejected: authentication required.");
+                return;
+            }
             if (this.isIdentityRejected(error)) {
                 this.markConnectionError(this.getIdentityRequiredMessage());
                 this.logger?.error("POST /activities rejected: missing client identity.");
@@ -236,6 +344,11 @@ export class ApiClient {
 
             return activities;
         } catch (error) {
+            if (this.isUnauthorized(error)) {
+                this.markAuthRequired();
+                this.logger?.warn("GET /activities rejected: authentication required.");
+                return [];
+            }
             if (axios.isAxiosError(error)) {
                 this.markConnectionError("Unable to fetch activities from Work Share API.");
                 console.error(`Failed to fetch activities: ${error.message}`);
@@ -285,6 +398,11 @@ export class ApiClient {
                 userName: patch.userName,
             });
         } catch (error) {
+            if (this.isUnauthorized(error)) {
+                this.markAuthRequired();
+                this.logger?.warn("POST /patches rejected: authentication required.");
+                return;
+            }
             if (axios.isAxiosError(error)) {
                 if (this.isIdentityRejected(error)) {
                     this.markConnectionError(this.getIdentityRequiredMessage());
@@ -351,6 +469,11 @@ export class ApiClient {
                 patchCount: payload.patches.length,
             });
         } catch (error) {
+            if (this.isUnauthorized(error)) {
+                this.markAuthRequired();
+                this.logger?.warn("POST /patches/sync rejected: authentication required.");
+                return;
+            }
             if (axios.isAxiosError(error)) {
                 if (this.isIdentityRejected(error)) {
                     this.markConnectionError(this.getIdentityRequiredMessage());
@@ -421,6 +544,11 @@ export class ApiClient {
 
             return patches;
         } catch (error) {
+            if (this.isUnauthorized(error)) {
+                this.markAuthRequired();
+                this.logger?.warn("GET /patches rejected: authentication required.");
+                return [];
+            }
             if (axios.isAxiosError(error)) {
                 this.markConnectionError("Unable to fetch patches from Work Share API.");
                 console.error(`Failed to fetch patches: ${error.message}`);
@@ -511,6 +639,11 @@ export class ApiClient {
 
             return normalizedResponse.repositories;
         } catch (error) {
+            if (this.isUnauthorized(error)) {
+                this.markAuthRequired();
+                this.logger?.warn("GET /files rejected: authentication required.");
+                return [];
+            }
             if (axios.isAxiosError(error)) {
                 this.markConnectionError("Unable to fetch files from Work Share API.");
                 console.error(`Failed to fetch files: ${error.message}`);

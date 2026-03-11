@@ -22,7 +22,7 @@ import { NextFunction, Request, Response } from "express";
 // Bypass JWT auth in unit tests; the x-test-username header drives the identity.
 jest.mock("../middleware/auth", () => ({
     requireAuth: (req: Request & { authenticatedUsername?: string }, _res: Response, next: NextFunction) => {
-        req.authenticatedUsername = req.headers["x-test-username"] as string | undefined ?? "Alice";
+        req.authenticatedUsername = (req.headers["x-test-username"] as string | undefined) ?? "Alice";
         next();
     },
     silentRefresh: (_req: Request, _res: Response, next: NextFunction) => next(),
@@ -152,11 +152,7 @@ describe("ActivityController", () => {
                 ],
             };
 
-            await request(app)
-                .post("/activities")
-                .set("x-test-username", "Alice")
-                .send(activityBatch)
-                .expect(200);
+            await request(app).post("/activities").set("x-test-username", "Alice").send(activityBatch).expect(200);
 
             const response = await request(app)
                 .get("/activities")
@@ -360,6 +356,10 @@ describe("ActivityController", () => {
                 baseCommit: "abc123",
                 patch: "diff --git a/src/index.ts b/src/index.ts\\n...",
                 timestamp: new Date().toISOString(),
+                changeType: "pending",
+                commitSha: "abc123def",
+                commitShortSha: "abc123d",
+                commitMessage: "feat: update index",
             };
             const patch2: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/other.git",
@@ -369,6 +369,8 @@ describe("ActivityController", () => {
                 baseCommit: "def456",
                 patch: "diff --git a/src/app.ts b/src/app.ts\\n...",
                 timestamp: new Date().toISOString(),
+                changeType: "working",
+                workingState: "unstaged",
             };
             await request(app).post("/patches").set("x-test-username", "Alice").send(patch1);
             await request(app).post("/patches").set("x-test-username", "Bob").send(patch2);
@@ -451,6 +453,39 @@ describe("ActivityController", () => {
             const timestamps = response.body.patches.map((p: StoredPatch) => p.timestamp);
             const sortedTimestamps = [...timestamps].sort((a, b) => b.localeCompare(a));
             expect(timestamps).toEqual(sortedTimestamps);
+        });
+
+        it("should filter patches by changeType", async () => {
+            const response = await request(app)
+                .get("/patches")
+                .set("x-test-username", "Alice")
+                .query({ changeType: "pending" })
+                .expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.patches[0].changeType).toBe("pending");
+        });
+
+        it("should filter patches by workingState", async () => {
+            const response = await request(app)
+                .get("/patches")
+                .set("x-test-username", "Alice")
+                .query({ workingState: "unstaged" })
+                .expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.patches[0].workingState).toBe("unstaged");
+        });
+
+        it("should filter patches by commitSha", async () => {
+            const response = await request(app)
+                .get("/patches")
+                .set("x-test-username", "Alice")
+                .query({ commitSha: "abc123def" })
+                .expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.patches[0].commitSha).toBe("abc123def");
         });
     });
 

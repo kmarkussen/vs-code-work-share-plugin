@@ -11,6 +11,7 @@ import {
     DialogContent,
     Divider,
     Drawer,
+    FormControlLabel,
     IconButton,
     Link,
     List,
@@ -20,6 +21,8 @@ import {
     Paper,
     Pagination,
     Stack,
+    Switch,
+    TextField,
     ThemeProvider,
     Toolbar,
     Typography,
@@ -33,6 +36,9 @@ import {
     DashboardCustomize as DashboardCustomizeIcon,
     Difference as DifferenceIcon,
     Download as DownloadIcon,
+    GroupAdd as GroupAddIcon,
+    Group as GroupIcon,
+    ManageAccounts as ManageAccountsIcon,
     Fullscreen as FullscreenIcon,
     Hub as HubIcon,
     Insights as InsightsIcon,
@@ -41,7 +47,37 @@ import {
     PersonSearch as PersonSearchIcon,
     Share as ShareIcon,
 } from "@mui/icons-material";
-import { fetchActivities, fetchFiles, fetchPatches } from "./api";
+import {
+    fetchActivities,
+    fetchInvitations,
+    fetchCurrentUser,
+    fetchFiles,
+    fetchPatches,
+    fetchSshKeys,
+    fetchTeamDetails,
+    fetchTeams,
+    isUnauthorizedError,
+    loginUser,
+    logoutUser,
+    registerUser,
+    acceptInvitation,
+    createTeam,
+    deleteTeam,
+    inviteTeamMember,
+    leaveOrDeclineTeam,
+    toggleTeamSharing,
+    updateCurrentUserProfile,
+    addSshKey,
+    deleteSshKey,
+    type AuthCredentials,
+    type AuthUserProfile,
+    type ProfileUpdatePayload,
+    type RegisterPayload,
+    type SshKeyEntry,
+    type TeamDetails,
+    type TeamInvitation,
+    type TeamSummary,
+} from "./api";
 import {
     buildActivityFeed,
     buildDashboardMetrics,
@@ -54,7 +90,10 @@ import {
 } from "./dashboardData";
 import { Activity, Patch, RepositoryFiles } from "./types";
 
+const LANDING_PATH = "/";
 const DASHBOARD_PATH = "/dashboard";
+const TEAMS_PATH = "/teams";
+const PROFILE_PATH = "/profile";
 
 const INSTALL_STEPS = [
     "Download the latest VSIX package from this site.",
@@ -133,7 +172,11 @@ const theme = createTheme({
 });
 
 function App() {
-    const isDashboardRoute = window.location.pathname === DASHBOARD_PATH;
+    const currentPath = window.location.pathname;
+    const isDashboardRoute = currentPath === DASHBOARD_PATH;
+    const isTeamsRoute = currentPath === TEAMS_PATH;
+    const isProfileRoute = currentPath === PROFILE_PATH;
+    const isLandingRoute = currentPath === LANDING_PATH;
     const [activities, setActivities] = useState<Activity[]>([]);
     const [patches, setPatches] = useState<Patch[]>([]);
     const [repositories, setRepositories] = useState<RepositoryFiles[]>([]);
@@ -146,14 +189,80 @@ function App() {
     const [isDiffDrawerOpen, setIsDiffDrawerOpen] = useState(false);
     const [isFullscreenDiffOpen, setIsFullscreenDiffOpen] = useState(false);
     const [isNavigationDrawerOpen, setIsNavigationDrawerOpen] = useState(false);
+    const [authLoading, setAuthLoading] = useState(true);
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [currentUser, setCurrentUser] = useState<AuthUserProfile | null>(null);
+    const [authError, setAuthError] = useState<string | null>(null);
+    const [teams, setTeams] = useState<TeamSummary[]>([]);
+    const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
+    const [selectedTeamName, setSelectedTeamName] = useState<string | null>(null);
+    const [selectedTeam, setSelectedTeam] = useState<TeamDetails | null>(null);
+    const [teamLoading, setTeamLoading] = useState(false);
+    const [teamError, setTeamError] = useState<string | null>(null);
+    const [teamActionMessage, setTeamActionMessage] = useState<string | null>(null);
+    const [sshKeys, setSshKeys] = useState<SshKeyEntry[]>([]);
+    const [profileLoading, setProfileLoading] = useState(false);
+    const [profileError, setProfileError] = useState<string | null>(null);
+    const [profileActionMessage, setProfileActionMessage] = useState<string | null>(null);
 
     useEffect(() => {
-        void loadData();
+        const initializeSession = async () => {
+            try {
+                const profile = await fetchCurrentUser();
+                setCurrentUser(profile);
+                setIsAuthenticated(true);
+                if (isTeamsRoute) {
+                    await loadCollaborationData();
+                }
+                if (isProfileRoute) {
+                    await loadProfileData();
+                }
+                if (isDashboardRoute || isLandingRoute) {
+                    await loadData();
+                } else {
+                    setLoading(false);
+                }
+            } catch (error) {
+                if (!isUnauthorizedError(error)) {
+                    console.error("Failed to initialize session:", error);
+                }
+                setIsAuthenticated(false);
+                setCurrentUser(null);
+                setTeams([]);
+                setInvitations([]);
+                setSelectedTeamName(null);
+                setSelectedTeam(null);
+                setSshKeys([]);
+                setLoading(false);
+            } finally {
+                setAuthLoading(false);
+            }
+        };
+
+        void initializeSession();
+    }, [isDashboardRoute, isLandingRoute, isProfileRoute, isTeamsRoute]);
+
+    useEffect(() => {
+        if (!isAuthenticated || !(isDashboardRoute || isLandingRoute)) {
+            return;
+        }
+
         const interval = setInterval(() => {
             void loadData();
         }, 5000);
         return () => clearInterval(interval);
-    }, []);
+    }, [isAuthenticated, isDashboardRoute, isLandingRoute]);
+
+    useEffect(() => {
+        if (!isAuthenticated || !isTeamsRoute) {
+            return;
+        }
+
+        const interval = setInterval(() => {
+            void loadCollaborationData();
+        }, 7000);
+        return () => clearInterval(interval);
+    }, [isAuthenticated, isTeamsRoute, selectedTeamName]);
 
     useEffect(() => {
         const loadVsixInfo = async () => {
@@ -225,9 +334,279 @@ function App() {
             setPatches(patchesData);
             setRepositories(filesData);
         } catch (error) {
+            if (isUnauthorizedError(error)) {
+                setIsAuthenticated(false);
+                setCurrentUser(null);
+                setActivities([]);
+                setPatches([]);
+                setRepositories([]);
+                setIsDiffDrawerOpen(false);
+                setIsFullscreenDiffOpen(false);
+                return;
+            }
+
             console.error("Failed to load data:", error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const loadCollaborationData = async (preferredTeamName?: string) => {
+        setTeamLoading(true);
+        setTeamError(null);
+
+        try {
+            const [teamsData, invitationsData] = await Promise.all([fetchTeams(), fetchInvitations()]);
+            setTeams(teamsData);
+            setInvitations(invitationsData);
+
+            let nextTeamName = preferredTeamName ?? selectedTeamName;
+            if (nextTeamName && !teamsData.some((team) => team.teamName === nextTeamName)) {
+                nextTeamName = null;
+            }
+            if (!nextTeamName && teamsData.length > 0) {
+                nextTeamName = teamsData[0].teamName;
+            }
+
+            setSelectedTeamName(nextTeamName);
+
+            if (nextTeamName) {
+                const details = await fetchTeamDetails(nextTeamName);
+                setSelectedTeam(details);
+            } else {
+                setSelectedTeam(null);
+            }
+        } catch (error) {
+            if (isUnauthorizedError(error)) {
+                setIsAuthenticated(false);
+                setCurrentUser(null);
+                setTeams([]);
+                setInvitations([]);
+                setSelectedTeamName(null);
+                setSelectedTeam(null);
+                return;
+            }
+
+            setTeamError(readApiErrorMessage(error));
+        } finally {
+            setTeamLoading(false);
+        }
+    };
+
+    const loadProfileData = async () => {
+        setProfileLoading(true);
+        setProfileError(null);
+
+        try {
+            const [profile, keys] = await Promise.all([fetchCurrentUser(), fetchSshKeys()]);
+            setCurrentUser(profile);
+            setSshKeys(keys);
+        } catch (error) {
+            if (isUnauthorizedError(error)) {
+                setIsAuthenticated(false);
+                setCurrentUser(null);
+                setSshKeys([]);
+                return;
+            }
+
+            setProfileError(readApiErrorMessage(error));
+        } finally {
+            setProfileLoading(false);
+        }
+    };
+
+    const handleLogin = async (credentials: AuthCredentials) => {
+        setAuthError(null);
+        setAuthLoading(true);
+        try {
+            await loginUser(credentials);
+            const profile = await fetchCurrentUser();
+            setCurrentUser(profile);
+            setIsAuthenticated(true);
+            setLoading(true);
+            await loadData();
+        } catch (error) {
+            setAuthError(readApiErrorMessage(error));
+            setIsAuthenticated(false);
+        } finally {
+            setAuthLoading(false);
+        }
+    };
+
+    const handleRegister = async (payload: RegisterPayload) => {
+        setAuthError(null);
+        setAuthLoading(true);
+        try {
+            await registerUser(payload);
+            const profile = await fetchCurrentUser();
+            setCurrentUser(profile);
+            setIsAuthenticated(true);
+            setLoading(true);
+            await loadData();
+        } catch (error) {
+            setAuthError(readApiErrorMessage(error));
+            setIsAuthenticated(false);
+        } finally {
+            setAuthLoading(false);
+        }
+    };
+
+    const handleLogout = async () => {
+        setAuthError(null);
+        try {
+            await logoutUser();
+        } catch (error) {
+            console.error("Logout failed:", error);
+        } finally {
+            setCurrentUser(null);
+            setIsAuthenticated(false);
+            setActivities([]);
+            setPatches([]);
+            setRepositories([]);
+            setTeams([]);
+            setInvitations([]);
+            setSelectedTeamName(null);
+            setSelectedTeam(null);
+            setSshKeys([]);
+            setSelectedPatchId(null);
+            setIsDiffDrawerOpen(false);
+            setIsFullscreenDiffOpen(false);
+            setLoading(false);
+        }
+    };
+
+    const handleCreateTeam = async (teamName: string) => {
+        setTeamError(null);
+        setTeamActionMessage(null);
+
+        try {
+            await createTeam(teamName);
+            setTeamActionMessage(`Team ${teamName} created.`);
+            await loadCollaborationData(teamName);
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleSelectTeam = async (teamName: string) => {
+        setSelectedTeamName(teamName);
+        await loadCollaborationData(teamName);
+    };
+
+    const handleInviteMember = async (usernameOrEmail: string) => {
+        if (!selectedTeamName) {
+            return;
+        }
+
+        setTeamError(null);
+        setTeamActionMessage(null);
+        try {
+            await inviteTeamMember(selectedTeamName, usernameOrEmail);
+            setTeamActionMessage(`Invite sent to ${usernameOrEmail}.`);
+            await loadCollaborationData(selectedTeamName);
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleAcceptInvitation = async (teamName: string) => {
+        setTeamError(null);
+        setTeamActionMessage(null);
+        try {
+            await acceptInvitation(teamName);
+            setTeamActionMessage(`Joined ${teamName}.`);
+            await loadCollaborationData(teamName);
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleDeclineInvitation = async (teamName: string) => {
+        setTeamError(null);
+        setTeamActionMessage(null);
+        try {
+            await leaveOrDeclineTeam(teamName);
+            setTeamActionMessage(`Declined invitation to ${teamName}.`);
+            await loadCollaborationData(selectedTeamName ?? undefined);
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleLeaveTeam = async (teamName: string) => {
+        setTeamError(null);
+        setTeamActionMessage(null);
+        try {
+            await leaveOrDeclineTeam(teamName);
+            setTeamActionMessage(`Left ${teamName}.`);
+            await loadCollaborationData();
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleDeleteTeam = async (teamName: string) => {
+        setTeamError(null);
+        setTeamActionMessage(null);
+        try {
+            await deleteTeam(teamName);
+            setTeamActionMessage(`Deleted ${teamName}.`);
+            await loadCollaborationData();
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleToggleSharing = async (teamName: string, enabled: boolean) => {
+        setTeamError(null);
+        setTeamActionMessage(null);
+        try {
+            await toggleTeamSharing(teamName, enabled);
+            setTeamActionMessage(
+                enabled ? `Sharing enabled for ${teamName}.` : `Sharing disabled for ${teamName}.`,
+            );
+            await loadCollaborationData(teamName);
+        } catch (error) {
+            setTeamError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleProfileUpdate = async (payload: ProfileUpdatePayload, successMessage: string) => {
+        setProfileError(null);
+        setProfileActionMessage(null);
+
+        try {
+            await updateCurrentUserProfile(payload);
+            setProfileActionMessage(successMessage);
+            await loadProfileData();
+        } catch (error) {
+            setProfileError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleAddSshKey = async (label: string, publicKey: string) => {
+        setProfileError(null);
+        setProfileActionMessage(null);
+
+        try {
+            await addSshKey(label, publicKey);
+            setProfileActionMessage(`Added SSH key ${label}.`);
+            await loadProfileData();
+        } catch (error) {
+            setProfileError(readApiErrorMessage(error));
+        }
+    };
+
+    const handleDeleteSshKey = async (id: number) => {
+        setProfileError(null);
+        setProfileActionMessage(null);
+
+        try {
+            await deleteSshKey(id);
+            setProfileActionMessage("SSH key removed.");
+            await loadProfileData();
+        } catch (error) {
+            setProfileError(readApiErrorMessage(error));
         }
     };
 
@@ -246,6 +625,16 @@ function App() {
             label: "Operations workspace",
             href: "/dashboard",
             icon: DashboardCustomizeIcon,
+        },
+        {
+            label: "Teams and sharing",
+            href: "/teams",
+            icon: GroupIcon,
+        },
+        {
+            label: "Private profile",
+            href: "/profile",
+            icon: ManageAccountsIcon,
         },
         {
             label: "Download VSIX",
@@ -295,7 +684,47 @@ function App() {
         },
     ];
 
-    const sectionEntries = isDashboardRoute ? dashboardSections : landingSections;
+    const teamSections: NavigationEntry[] = [
+        {
+            label: "Team overview",
+            href: "#teams-overview",
+            icon: GroupIcon,
+        },
+        {
+            label: "Invitations",
+            href: "#invitations",
+            icon: GroupAddIcon,
+        },
+        {
+            label: "Sharing controls",
+            href: "#sharing-controls",
+            icon: HubIcon,
+        },
+    ];
+
+    const profileSections: NavigationEntry[] = [
+        {
+            label: "Account",
+            href: "#profile-account",
+            icon: ManageAccountsIcon,
+        },
+        {
+            label: "Password",
+            href: "#profile-password",
+            icon: HubIcon,
+        },
+        {
+            label: "SSH keys",
+            href: "#profile-ssh-keys",
+            icon: GroupAddIcon,
+        },
+    ];
+
+    const sectionEntries =
+        isDashboardRoute ? dashboardSections
+        : isTeamsRoute ? teamSections
+        : isProfileRoute ? profileSections
+        : landingSections;
 
     return (
         <ThemeProvider theme={theme}>
@@ -315,14 +744,24 @@ function App() {
                         <Typography variant='h6' component='div' sx={{ flexGrow: 1 }}>
                             Work Share
                         </Typography>
-                        {isDashboardRoute ?
-                            <Button color='inherit' href='/'>
-                                Product site
+                        {isAuthenticated && currentUser ?
+                            <Chip size='small' color='secondary' label={`Signed in as ${currentUser.username}`} />
+                        :   null}
+                        {isAuthenticated ?
+                            <Button color='inherit' onClick={() => void handleLogout()} sx={{ ml: 1.5 }}>
+                                Logout
                             </Button>
-                        :   <Button color='inherit' href='/dashboard'>
-                                Operations workspace
-                            </Button>
-                        }
+                        :   <Button
+                                color='inherit'
+                                href={isLandingRoute ? '/#install-guide' : currentPath}
+                                variant='outlined'
+                                sx={{ ml: 1.5 }}>
+                                Login / Register
+                            </Button>}
+                        {!isDashboardRoute && <Button color='inherit' href='/dashboard'>Operations workspace</Button>}
+                        {!isTeamsRoute && <Button color='inherit' href='/teams'>Teams</Button>}
+                        {!isProfileRoute && <Button color='inherit' href='/profile'>Profile</Button>}
+                        {!isLandingRoute && <Button color='inherit' href='/'>Product site</Button>}
                     </Toolbar>
                 </Box>
 
@@ -364,7 +803,9 @@ function App() {
 
                         <Box className='navigation-section'>
                             <Typography variant='overline' color='text.secondary'>
-                                {isDashboardRoute ? "Workspace sections" : "Product sections"}
+                                {isDashboardRoute || isTeamsRoute || isProfileRoute ?
+                                    "Workspace sections"
+                                :   "Product sections"}
                             </Typography>
                             <List disablePadding>
                                 {sectionEntries.map((entry) => {
@@ -390,22 +831,89 @@ function App() {
 
                 <Container maxWidth='xl' sx={{ mt: 4, mb: 6, flex: 1 }}>
                     {isDashboardRoute ?
-                        <DashboardPage
-                            loading={loading}
-                            activityFeed={activityFeed}
-                            dashboardMetrics={dashboardMetrics}
-                            featuredPatches={featuredPatches}
-                            openPatch={openPatch}
-                            repositorySummaries={repositorySummaries}
-                            repositoryTree={repositoryTree}
-                            userSummaries={userSummaries}
-                            selectedPatchId={selectedPatchId}
-                        />
+                        isAuthenticated ?
+                            <DashboardPage
+                                loading={loading}
+                                activityFeed={activityFeed}
+                                dashboardMetrics={dashboardMetrics}
+                                featuredPatches={featuredPatches}
+                                openPatch={openPatch}
+                                repositorySummaries={repositorySummaries}
+                                repositoryTree={repositoryTree}
+                                userSummaries={userSummaries}
+                                selectedPatchId={selectedPatchId}
+                            />
+                        :   <DashboardAuthGate
+                                authLoading={authLoading}
+                                authError={authError}
+                                onLogin={handleLogin}
+                                onRegister={handleRegister}
+                            />
+                    : isTeamsRoute ?
+                        isAuthenticated ?
+                            <TeamManagementPage
+                                teams={teams}
+                                invitations={invitations}
+                                selectedTeamName={selectedTeamName}
+                                selectedTeam={selectedTeam}
+                                currentUser={currentUser}
+                                teamLoading={teamLoading}
+                                teamError={teamError}
+                                teamActionMessage={teamActionMessage}
+                                onCreateTeam={handleCreateTeam}
+                                onSelectTeam={handleSelectTeam}
+                                onInviteMember={handleInviteMember}
+                                onAcceptInvitation={handleAcceptInvitation}
+                                onDeclineInvitation={handleDeclineInvitation}
+                                onLeaveTeam={handleLeaveTeam}
+                                onDeleteTeam={handleDeleteTeam}
+                                onToggleSharing={handleToggleSharing}
+                            />
+                        :   <DashboardAuthGate
+                                authLoading={authLoading}
+                                authError={authError}
+                                onLogin={handleLogin}
+                                onRegister={handleRegister}
+                                title='Login required for team management'
+                                description='Team membership, invitations, and sharing controls are available to authenticated teammates only.'
+                            />
+                    : isProfileRoute ?
+                        isAuthenticated ?
+                            <ProfileManagementPage
+                                currentUser={currentUser}
+                                profileLoading={profileLoading}
+                                profileError={profileError}
+                                profileActionMessage={profileActionMessage}
+                                sshKeys={sshKeys}
+                                onSaveProfile={async (payload) =>
+                                    handleProfileUpdate(payload, "Profile details updated.")
+                                }
+                                onChangePassword={async (payload) =>
+                                    handleProfileUpdate(payload, "Password changed successfully.")
+                                }
+                                onAddSshKey={handleAddSshKey}
+                                onDeleteSshKey={handleDeleteSshKey}
+                            />
+                        :   <DashboardAuthGate
+                                authLoading={authLoading}
+                                authError={authError}
+                                onLogin={handleLogin}
+                                onRegister={handleRegister}
+                                title='Login required for private profile'
+                                description='Profile details, password changes, and SSH key management are private to your account.'
+                            />
                     :   <LandingPage
-                            activityFeed={activityFeed.slice(0, 18)}
+                            activityFeed={isAuthenticated ? activityFeed.slice(0, 18) : []}
                             dashboardMetrics={dashboardMetrics}
-                            userSummaries={userSummaries.slice(0, 8)}
+                            userSummaries={isAuthenticated ? userSummaries.slice(0, 8) : []}
                             vsixInfo={vsixInfo}
+                            isAuthenticated={isAuthenticated}
+                            currentUser={currentUser}
+                            authLoading={authLoading}
+                            authError={authError}
+                            onLogin={handleLogin}
+                            onRegister={handleRegister}
+                            onLogout={handleLogout}
                         />
                     }
                 </Container>
@@ -421,8 +929,16 @@ function App() {
                                 VSIX download
                             </Link>
                             {" · "}
-                            <Link underline='hover' color='inherit' href='/dashboard'>
+                            <Link underline='hover' color='inherit' href={isAuthenticated ? '/dashboard' : '/'}>
                                 Live workspace
+                            </Link>
+                            {" · "}
+                            <Link underline='hover' color='inherit' href={isAuthenticated ? '/teams' : '/'}>
+                                Team settings
+                            </Link>
+                            {" · "}
+                            <Link underline='hover' color='inherit' href={isAuthenticated ? '/profile' : '/'}>
+                                Private profile
                             </Link>
                         </Typography>
                     </Container>
@@ -478,16 +994,690 @@ function App() {
     );
 }
 
+function readApiErrorMessage(error: unknown): string {
+    const genericMessage = "Request failed. Please verify your details and try again.";
+    if (!error || typeof error !== "object") {
+        return genericMessage;
+    }
+
+    const maybeResponse = (error as { response?: { data?: { error?: unknown } } }).response;
+    if (typeof maybeResponse?.data?.error === "string" && maybeResponse.data.error.trim()) {
+        return maybeResponse.data.error;
+    }
+
+    const maybeMessage = (error as { message?: unknown }).message;
+    return typeof maybeMessage === "string" && maybeMessage.trim() ? maybeMessage : genericMessage;
+}
+
+function AuthPanel({
+    authLoading,
+    authError,
+    currentUser,
+    isAuthenticated,
+    onLogin,
+    onLogout,
+    onRegister,
+}: {
+    authLoading: boolean;
+    authError: string | null;
+    currentUser: AuthUserProfile | null;
+    isAuthenticated: boolean;
+    onLogin: (payload: AuthCredentials) => Promise<void>;
+    onLogout: () => Promise<void>;
+    onRegister: (payload: RegisterPayload) => Promise<void>;
+}) {
+    const [mode, setMode] = useState<"login" | "register">("login");
+    const [username, setUsername] = useState("");
+    const [password, setPassword] = useState("");
+    const [fullName, setFullName] = useState("");
+    const [email, setEmail] = useState("");
+
+    const submit = async () => {
+        if (mode === "login") {
+            await onLogin({ username: username.trim(), password });
+            return;
+        }
+
+        await onRegister({
+            username: username.trim(),
+            password,
+            fullName: fullName.trim(),
+            email: email.trim(),
+        });
+    };
+
+    if (isAuthenticated && currentUser) {
+        return (
+            <Stack spacing={1.5}>
+                <Alert severity='success'>Authenticated as {currentUser.username}.</Alert>
+                <Button variant='outlined' onClick={() => void onLogout()}>
+                    Logout
+                </Button>
+            </Stack>
+        );
+    }
+
+    return (
+        <Stack spacing={1.5}>
+            <Stack direction='row' spacing={1}>
+                <Button
+                    variant={mode === "login" ? "contained" : "outlined"}
+                    onClick={() => setMode("login")}
+                    disabled={authLoading}>
+                    Login
+                </Button>
+                <Button
+                    variant={mode === "register" ? "contained" : "outlined"}
+                    onClick={() => setMode("register")}
+                    disabled={authLoading}>
+                    Create account
+                </Button>
+            </Stack>
+
+            <TextField
+                label='Username'
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete='username'
+                required
+                fullWidth
+                size='small'
+            />
+
+            {mode === "register" ?
+                <TextField
+                    label='Full name'
+                    value={fullName}
+                    onChange={(event) => setFullName(event.target.value)}
+                    autoComplete='name'
+                    required
+                    fullWidth
+                    size='small'
+                />
+            :   null}
+
+            {mode === "register" ?
+                <TextField
+                    label='Email'
+                    type='email'
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    autoComplete='email'
+                    required
+                    fullWidth
+                    size='small'
+                />
+            :   null}
+
+            <TextField
+                label='Password'
+                type='password'
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                required
+                fullWidth
+                size='small'
+            />
+
+            <Button variant='contained' disabled={authLoading} onClick={() => void submit()}>
+                {authLoading ? "Working..." : mode === "login" ? "Login" : "Create account"}
+            </Button>
+
+            {authError ? <Alert severity='error'>{authError}</Alert> : null}
+        </Stack>
+    );
+}
+
+function DashboardAuthGate({
+    authLoading,
+    authError,
+    onLogin,
+    onRegister,
+    title = "Login required for dashboard data",
+    description = "Repository, user, activity, and patch streams are restricted to authenticated teammates.",
+}: {
+    authLoading: boolean;
+    authError: string | null;
+    onLogin: (payload: AuthCredentials) => Promise<void>;
+    onRegister: (payload: RegisterPayload) => Promise<void>;
+    title?: string;
+    description?: string;
+}) {
+    return (
+        <Paper elevation={0} sx={{ p: 4, maxWidth: 720, mx: "auto" }}>
+            <Typography variant='h4'>{title}</Typography>
+            <Typography variant='body1' color='text.secondary' sx={{ mt: 1, mb: 3 }}>
+                {description}
+            </Typography>
+            <AuthPanel
+                authLoading={authLoading}
+                authError={authError}
+                currentUser={null}
+                isAuthenticated={false}
+                onLogin={onLogin}
+                onLogout={async () => {}}
+                onRegister={onRegister}
+            />
+        </Paper>
+    );
+}
+
+function TeamManagementPage({
+    teams,
+    invitations,
+    selectedTeamName,
+    selectedTeam,
+    currentUser,
+    teamLoading,
+    teamError,
+    teamActionMessage,
+    onCreateTeam,
+    onSelectTeam,
+    onInviteMember,
+    onAcceptInvitation,
+    onDeclineInvitation,
+    onLeaveTeam,
+    onDeleteTeam,
+    onToggleSharing,
+}: {
+    teams: TeamSummary[];
+    invitations: TeamInvitation[];
+    selectedTeamName: string | null;
+    selectedTeam: TeamDetails | null;
+    currentUser: AuthUserProfile | null;
+    teamLoading: boolean;
+    teamError: string | null;
+    teamActionMessage: string | null;
+    onCreateTeam: (teamName: string) => Promise<void>;
+    onSelectTeam: (teamName: string) => Promise<void>;
+    onInviteMember: (usernameOrEmail: string) => Promise<void>;
+    onAcceptInvitation: (teamName: string) => Promise<void>;
+    onDeclineInvitation: (teamName: string) => Promise<void>;
+    onLeaveTeam: (teamName: string) => Promise<void>;
+    onDeleteTeam: (teamName: string) => Promise<void>;
+    onToggleSharing: (teamName: string, enabled: boolean) => Promise<void>;
+}) {
+    const [newTeamName, setNewTeamName] = useState("");
+    const [inviteIdentity, setInviteIdentity] = useState("");
+
+    const userMembership = selectedTeam?.members.find((member) => member.username === currentUser?.username) ?? null;
+    const isOwner = selectedTeam?.ownerUsername === currentUser?.username;
+
+    return (
+        <Stack spacing={3}>
+            <Paper className='ops-hero' elevation={0} id='teams-overview'>
+                <Typography variant='overline' color='secondary.main'>
+                    Team workspace
+                </Typography>
+                <Typography variant='h3' sx={{ mt: 1 }}>
+                    Manage teams, invitations, and sharing scopes.
+                </Typography>
+                <Typography variant='body1' color='text.secondary' sx={{ mt: 2, maxWidth: 840 }}>
+                    Dedicated controls for creating teams, inviting members, and toggling per-team sharing in line with
+                    the Work Share visibility model.
+                </Typography>
+            </Paper>
+
+            {teamError && <Alert severity='error'>{teamError}</Alert>}
+            {teamActionMessage && <Alert severity='success'>{teamActionMessage}</Alert>}
+
+            <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', lg: 'minmax(320px, 0.9fr) minmax(0, 1.6fr)' } }}>
+                <Stack spacing={3}>
+                    <Paper className='workspace-panel' elevation={0}>
+                        <SectionHeader
+                            title='Your teams'
+                            detail='Select a team to inspect members and sharing status.'
+                        />
+                        {teams.length === 0 ?
+                            <Alert severity='info'>No active teams yet. Create one to start coordinating sharing.</Alert>
+                        :   <List disablePadding>
+                                {teams.map((team) => (
+                                    <ListItemButton
+                                        key={team.teamName}
+                                        className='feed-row'
+                                        selected={team.teamName === selectedTeamName}
+                                        onClick={() => void onSelectTeam(team.teamName)}>
+                                        <ListItemText
+                                            primary={team.teamName}
+                                            secondary={`${team.memberCount} members · owner ${team.ownerUsername}`}
+                                        />
+                                        {team.isOwner && <Chip size='small' label='Owner' color='secondary' />}
+                                    </ListItemButton>
+                                ))}
+                            </List>}
+
+                        <Divider sx={{ my: 2.5 }} />
+
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                            <TextField
+                                fullWidth
+                                size='small'
+                                label='New team name'
+                                value={newTeamName}
+                                onChange={(event) => setNewTeamName(event.target.value)}
+                            />
+                            <Button
+                                variant='contained'
+                                onClick={async () => {
+                                    const normalized = newTeamName.trim();
+                                    if (!normalized) {
+                                        return;
+                                    }
+                                    await onCreateTeam(normalized);
+                                    setNewTeamName('');
+                                }}>
+                                Create team
+                            </Button>
+                        </Stack>
+                    </Paper>
+
+                    <Paper className='workspace-panel' elevation={0} id='invitations'>
+                        <SectionHeader
+                            title='Invitations'
+                            detail='Accept or decline incoming team invites.'
+                        />
+                        {invitations.length === 0 ?
+                            <Alert severity='info'>No pending invitations.</Alert>
+                        :   <Stack spacing={1.5}>
+                                {invitations.map((invite) => (
+                                    <Paper key={`${invite.teamName}:${invite.invitedAt}`} className='focus-row' elevation={0}>
+                                        <Box>
+                                            <Typography variant='subtitle1'>{invite.teamName}</Typography>
+                                            <Typography variant='body2' color='text.secondary'>
+                                                Owner {invite.ownerUsername} · invited {formatRelativeTime(invite.invitedAt)}
+                                            </Typography>
+                                        </Box>
+                                        <Stack direction='row' spacing={1}>
+                                            <Button
+                                                size='small'
+                                                variant='contained'
+                                                onClick={() => void onAcceptInvitation(invite.teamName)}>
+                                                Accept
+                                            </Button>
+                                            <Button
+                                                size='small'
+                                                variant='outlined'
+                                                color='inherit'
+                                                onClick={() => void onDeclineInvitation(invite.teamName)}>
+                                                Decline
+                                            </Button>
+                                        </Stack>
+                                    </Paper>
+                                ))}
+                            </Stack>}
+                    </Paper>
+                </Stack>
+
+                <Paper className='workspace-panel' elevation={0} id='sharing-controls'>
+                    <SectionHeader
+                        title={selectedTeam ? `Team details: ${selectedTeam.teamName}` : 'Select a team'}
+                        detail='Review membership, invite additional people, and configure your sharing state for this team.'
+                    />
+
+                    {teamLoading && <CircularProgress size={24} sx={{ mb: 2 }} />}
+
+                    {!selectedTeam ?
+                        <Alert severity='info'>Choose a team from the left panel to manage sharing and members.</Alert>
+                    :   <Stack spacing={2}>
+                            <Paper className='focus-row' elevation={0}>
+                                <Box>
+                                    <Typography variant='subtitle1'>Owner</Typography>
+                                    <Typography variant='body2' color='text.secondary'>
+                                        {selectedTeam.ownerUsername}
+                                    </Typography>
+                                </Box>
+                                <Typography variant='body2' color='text.secondary'>
+                                    Created {formatRelativeTime(selectedTeam.createdAt)}
+                                </Typography>
+                            </Paper>
+
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={Boolean(userMembership?.sharingEnabled)}
+                                        onChange={(_, checked) => void onToggleSharing(selectedTeam.teamName, checked)}
+                                        disabled={!userMembership}
+                                    />
+                                }
+                                label={
+                                    userMembership?.sharingEnabled ?
+                                        'Sharing enabled for this team'
+                                    :   'Sharing disabled for this team'
+                                }
+                            />
+                            {!userMembership?.sharingEnabled && userMembership?.disabledAt && (
+                                <Typography variant='body2' color='text.secondary'>
+                                    Sharing disabled {formatRelativeTime(userMembership.disabledAt)}.
+                                </Typography>
+                            )}
+
+                            <Divider />
+
+                            {isOwner && (
+                                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                                    <TextField
+                                        fullWidth
+                                        size='small'
+                                        label='Invite by username or email'
+                                        value={inviteIdentity}
+                                        onChange={(event) => setInviteIdentity(event.target.value)}
+                                    />
+                                    <Button
+                                        variant='contained'
+                                        onClick={async () => {
+                                            const value = inviteIdentity.trim();
+                                            if (!value) {
+                                                return;
+                                            }
+                                            await onInviteMember(value);
+                                            setInviteIdentity('');
+                                        }}>
+                                        Invite member
+                                    </Button>
+                                </Stack>
+                            )}
+
+                            <Stack spacing={1.25}>
+                                {selectedTeam.members.map((member) => (
+                                    <Paper key={member.username} className='focus-row' elevation={0}>
+                                        <Box>
+                                            <Typography variant='subtitle1'>{member.fullName || member.username}</Typography>
+                                            <Typography variant='body2' color='text.secondary'>
+                                                @{member.username} · {member.status}
+                                            </Typography>
+                                        </Box>
+                                        <Stack direction='row' spacing={1} flexWrap='wrap' useFlexGap>
+                                            <Chip
+                                                size='small'
+                                                label={member.sharingEnabled ? 'Sharing on' : 'Sharing off'}
+                                                color={member.sharingEnabled ? 'success' : 'default'}
+                                            />
+                                            {member.username === selectedTeam.ownerUsername && (
+                                                <Chip size='small' label='Owner' color='secondary' />
+                                            )}
+                                        </Stack>
+                                    </Paper>
+                                ))}
+                            </Stack>
+
+                            <Divider />
+
+                            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                                {!isOwner && (
+                                    <Button
+                                        variant='outlined'
+                                        color='warning'
+                                        onClick={() => void onLeaveTeam(selectedTeam.teamName)}>
+                                        Leave team
+                                    </Button>
+                                )}
+                                {isOwner && (
+                                    <Button
+                                        variant='outlined'
+                                        color='error'
+                                        onClick={() => void onDeleteTeam(selectedTeam.teamName)}>
+                                        Delete team
+                                    </Button>
+                                )}
+                            </Stack>
+                        </Stack>}
+                </Paper>
+            </Box>
+        </Stack>
+    );
+}
+
+function ProfileManagementPage({
+    currentUser,
+    profileLoading,
+    profileError,
+    profileActionMessage,
+    sshKeys,
+    onSaveProfile,
+    onChangePassword,
+    onAddSshKey,
+    onDeleteSshKey,
+}: {
+    currentUser: AuthUserProfile | null;
+    profileLoading: boolean;
+    profileError: string | null;
+    profileActionMessage: string | null;
+    sshKeys: SshKeyEntry[];
+    onSaveProfile: (payload: ProfileUpdatePayload) => Promise<void>;
+    onChangePassword: (payload: ProfileUpdatePayload) => Promise<void>;
+    onAddSshKey: (label: string, publicKey: string) => Promise<void>;
+    onDeleteSshKey: (id: number) => Promise<void>;
+}) {
+    const [fullName, setFullName] = useState("");
+    const [email, setEmail] = useState("");
+    const [currentPassword, setCurrentPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
+    const [sshLabel, setSshLabel] = useState("");
+    const [sshPublicKey, setSshPublicKey] = useState("");
+    const [localPasswordError, setLocalPasswordError] = useState<string | null>(null);
+
+    useEffect(() => {
+        setFullName(currentUser?.fullName ?? "");
+        setEmail(currentUser?.email ?? "");
+    }, [currentUser]);
+
+    return (
+        <Stack spacing={3}>
+            <Paper className='ops-hero' elevation={0}>
+                <Typography variant='overline' color='secondary.main'>
+                    Private profile
+                </Typography>
+                <Typography variant='h3' sx={{ mt: 1 }}>
+                    Manage your account details and credentials.
+                </Typography>
+                <Typography variant='body1' color='text.secondary' sx={{ mt: 2, maxWidth: 840 }}>
+                    This page is private to your signed-in account and controls profile fields, password updates, and
+                    SSH keys used across your Work Share setup.
+                </Typography>
+            </Paper>
+
+            {profileError && <Alert severity='error'>{profileError}</Alert>}
+            {profileActionMessage && <Alert severity='success'>{profileActionMessage}</Alert>}
+            {profileLoading && <CircularProgress size={24} />}
+
+            <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' } }}>
+                <Paper className='workspace-panel' elevation={0} id='profile-account'>
+                    <SectionHeader title='Account details' detail='Update your display name and email address.' />
+                    <Stack spacing={1.5}>
+                        <TextField
+                            label='Username'
+                            value={currentUser?.username ?? ''}
+                            disabled
+                            size='small'
+                            fullWidth
+                        />
+                        <TextField
+                            label='Full name'
+                            value={fullName}
+                            onChange={(event) => setFullName(event.target.value)}
+                            size='small'
+                            fullWidth
+                        />
+                        <TextField
+                            label='Email'
+                            value={email}
+                            onChange={(event) => setEmail(event.target.value)}
+                            type='email'
+                            size='small'
+                            fullWidth
+                        />
+                        <Button
+                            variant='contained'
+                            onClick={() =>
+                                void onSaveProfile({
+                                    fullName: fullName.trim(),
+                                    email: email.trim(),
+                                })
+                            }>
+                            Save profile
+                        </Button>
+                    </Stack>
+                </Paper>
+
+                <Paper className='workspace-panel' elevation={0} id='profile-password'>
+                    <SectionHeader
+                        title='Change password'
+                        detail='Provide your current password and choose a new one.'
+                    />
+                    <Stack spacing={1.5}>
+                        <TextField
+                            label='Current password'
+                            type='password'
+                            value={currentPassword}
+                            onChange={(event) => setCurrentPassword(event.target.value)}
+                            size='small'
+                            fullWidth
+                        />
+                        <TextField
+                            label='New password'
+                            type='password'
+                            value={newPassword}
+                            onChange={(event) => setNewPassword(event.target.value)}
+                            size='small'
+                            fullWidth
+                        />
+                        <TextField
+                            label='Confirm new password'
+                            type='password'
+                            value={confirmPassword}
+                            onChange={(event) => setConfirmPassword(event.target.value)}
+                            size='small'
+                            fullWidth
+                        />
+                        {localPasswordError && <Alert severity='warning'>{localPasswordError}</Alert>}
+                        <Button
+                            variant='contained'
+                            onClick={async () => {
+                                setLocalPasswordError(null);
+
+                                if (!currentPassword || !newPassword) {
+                                    setLocalPasswordError('Current password and new password are required.');
+                                    return;
+                                }
+
+                                if (newPassword !== confirmPassword) {
+                                    setLocalPasswordError('New password confirmation does not match.');
+                                    return;
+                                }
+
+                                await onChangePassword({
+                                    currentPassword,
+                                    newPassword,
+                                });
+
+                                setCurrentPassword('');
+                                setNewPassword('');
+                                setConfirmPassword('');
+                            }}>
+                            Change password
+                        </Button>
+                    </Stack>
+                </Paper>
+
+                <Paper className='workspace-panel' elevation={0} id='profile-ssh-keys' sx={{ gridColumn: { xs: '1', lg: '1 / -1' } }}>
+                    <SectionHeader
+                        title='SSH keys'
+                        detail='Register device keys with labels so they can be managed from your account.'
+                    />
+                    <Stack spacing={2}>
+                        <Stack direction={{ xs: 'column', lg: 'row' }} spacing={1.5}>
+                            <TextField
+                                size='small'
+                                label='Key label'
+                                value={sshLabel}
+                                onChange={(event) => setSshLabel(event.target.value)}
+                                sx={{ minWidth: { lg: 240 } }}
+                            />
+                            <TextField
+                                size='small'
+                                label='Public key'
+                                value={sshPublicKey}
+                                onChange={(event) => setSshPublicKey(event.target.value)}
+                                fullWidth
+                            />
+                            <Button
+                                variant='contained'
+                                onClick={async () => {
+                                    const normalizedLabel = sshLabel.trim();
+                                    const normalizedKey = sshPublicKey.trim();
+                                    if (!normalizedLabel || !normalizedKey) {
+                                        return;
+                                    }
+                                    await onAddSshKey(normalizedLabel, normalizedKey);
+                                    setSshLabel('');
+                                    setSshPublicKey('');
+                                }}>
+                                Add key
+                            </Button>
+                        </Stack>
+
+                        {sshKeys.length === 0 ?
+                            <Alert severity='info'>No SSH keys registered yet.</Alert>
+                        :   <Stack spacing={1.25}>
+                                {sshKeys.map((key) => (
+                                    <Paper key={key.id} className='focus-row' elevation={0}>
+                                        <Box sx={{ maxWidth: '75%' }}>
+                                            <Typography variant='subtitle1'>{key.label}</Typography>
+                                            <Typography
+                                                variant='body2'
+                                                color='text.secondary'
+                                                sx={{ wordBreak: 'break-all' }}>
+                                                {key.publicKey}
+                                            </Typography>
+                                        </Box>
+                                        <Stack direction='row' spacing={1} alignItems='center'>
+                                            <Typography variant='caption' color='text.secondary'>
+                                                {formatRelativeTime(key.createdAt)}
+                                            </Typography>
+                                            <Button
+                                                size='small'
+                                                variant='outlined'
+                                                color='error'
+                                                onClick={() => void onDeleteSshKey(key.id)}>
+                                                Remove
+                                            </Button>
+                                        </Stack>
+                                    </Paper>
+                                ))}
+                            </Stack>}
+                    </Stack>
+                </Paper>
+            </Box>
+        </Stack>
+    );
+}
+
 function LandingPage({
     activityFeed,
     dashboardMetrics,
     userSummaries,
     vsixInfo,
+    isAuthenticated,
+    currentUser,
+    authLoading,
+    authError,
+    onLogin,
+    onRegister,
+    onLogout,
 }: {
     activityFeed: ReturnType<typeof buildActivityFeed>;
     dashboardMetrics: ReturnType<typeof buildDashboardMetrics>;
     userSummaries: ReturnType<typeof buildUserSummaries>;
     vsixInfo: VsixInfo;
+    isAuthenticated: boolean;
+    currentUser: AuthUserProfile | null;
+    authLoading: boolean;
+    authError: string | null;
+    onLogin: (payload: AuthCredentials) => Promise<void>;
+    onRegister: (payload: RegisterPayload) => Promise<void>;
+    onLogout: () => Promise<void>;
 }) {
     return (
         <Stack spacing={4}>
@@ -504,7 +1694,11 @@ function LandingPage({
                         </Typography>
 
                         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mt: 4 }}>
-                            <Button variant='contained' size='large' href='/dashboard' endIcon={<ArrowOutwardIcon />}>
+                            <Button
+                                variant='contained'
+                                size='large'
+                                href={isAuthenticated ? "/dashboard" : "#install-guide"}
+                                endIcon={<ArrowOutwardIcon />}>
                                 Open operations workspace
                             </Button>
                             <Button
@@ -563,6 +1757,26 @@ function LandingPage({
                             Need packaging? Run npm run package at the workspace root, then return here to verify the
                             downloadable build.
                         </Typography>
+
+                        <Divider sx={{ my: 3 }} />
+
+                        <Typography variant='overline' color='secondary.main'>
+                            Access control
+                        </Typography>
+                        <Typography variant='h6' sx={{ mt: 1, mb: 1.5 }}>
+                            {isAuthenticated && currentUser ?
+                                `Signed in as ${currentUser.username}`
+                            :   "Create an account or log in to access team streams."}
+                        </Typography>
+                        <AuthPanel
+                            authLoading={authLoading}
+                            authError={authError}
+                            currentUser={currentUser}
+                            isAuthenticated={isAuthenticated}
+                            onLogin={onLogin}
+                            onLogout={onLogout}
+                            onRegister={onRegister}
+                        />
                     </Paper>
                 </Box>
             </Paper>
@@ -590,23 +1804,25 @@ function LandingPage({
                         title='Team focus snapshot'
                         detail='Use the live dashboard to see where people are currently investing effort.'
                     />
-                    <Stack spacing={1.5}>
-                        {userSummaries.slice(0, 4).map((user) => (
-                            <Paper key={user.name} className='focus-row' elevation={0}>
-                                <Box>
-                                    <Typography variant='h6'>{user.name}</Typography>
-                                    <Typography variant='body2' color='text.secondary'>
-                                        {user.topRepository || "No repository yet"} ·{" "}
-                                        {formatRelativeTime(user.lastSeen)}
-                                    </Typography>
-                                </Box>
-                                <Stack direction='row' spacing={1} flexWrap='wrap' useFlexGap>
-                                    <Chip size='small' label={`${user.fileCount} files`} />
-                                    <Chip size='small' label={`${user.patchCount} patches`} color='secondary' />
-                                </Stack>
-                            </Paper>
-                        ))}
-                    </Stack>
+                    {isAuthenticated ?
+                        <Stack spacing={1.5}>
+                            {userSummaries.slice(0, 4).map((user) => (
+                                <Paper key={user.name} className='focus-row' elevation={0}>
+                                    <Box>
+                                        <Typography variant='h6'>{user.name}</Typography>
+                                        <Typography variant='body2' color='text.secondary'>
+                                            {user.topRepository || "No repository yet"} ·{" "}
+                                            {formatRelativeTime(user.lastSeen)}
+                                        </Typography>
+                                    </Box>
+                                    <Stack direction='row' spacing={1} flexWrap='wrap' useFlexGap>
+                                        <Chip size='small' label={`${user.fileCount} files`} />
+                                        <Chip size='small' label={`${user.patchCount} patches`} color='secondary' />
+                                    </Stack>
+                                </Paper>
+                            ))}
+                        </Stack>
+                    :   <Alert severity='info'>Login is required to view live teammate activity.</Alert>}
                 </Paper>
 
                 <Paper className='workspace-panel' elevation={0}>
@@ -614,16 +1830,18 @@ function LandingPage({
                         title='Recent motion'
                         detail='A compact feed of activity and patch updates from the current server state.'
                     />
-                    <List disablePadding>
-                        {activityFeed.slice(0, 6).map((item) => (
-                            <ListItemButton key={item.id} className='feed-row' href='/dashboard'>
-                                <ListItemText
-                                    primary={item.title}
-                                    secondary={`${item.repositoryName} · ${item.filePath} · ${formatRelativeTime(item.timestamp)}`}
-                                />
-                            </ListItemButton>
-                        ))}
-                    </List>
+                    {isAuthenticated ?
+                        <List disablePadding>
+                            {activityFeed.slice(0, 6).map((item) => (
+                                <ListItemButton key={item.id} className='feed-row' href='/dashboard'>
+                                    <ListItemText
+                                        primary={item.title}
+                                        secondary={`${item.repositoryName} · ${item.filePath} · ${formatRelativeTime(item.timestamp)}`}
+                                    />
+                                </ListItemButton>
+                            ))}
+                        </List>
+                    :   <Alert severity='info'>Activity and patch streams are hidden for unauthenticated users.</Alert>}
                 </Paper>
             </Box>
         </Stack>

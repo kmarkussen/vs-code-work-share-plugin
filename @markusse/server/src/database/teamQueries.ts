@@ -10,9 +10,13 @@ import db from "../database/db";
  */
 export function getVisibleTeammates(username: string, patchTimestamp?: string): Set<string> {
     // Find all teams where the requesting user is an active member.
-    const userTeams = db.prepare(`
+    const userTeams = db
+        .prepare(
+            `
         SELECT team_name FROM team_members WHERE username = ? AND status = 'active'
-    `).all(username) as Array<{ team_name: string }>;
+    `,
+        )
+        .all(username) as Array<{ team_name: string }>;
 
     if (userTeams.length === 0) {
         return new Set();
@@ -22,7 +26,9 @@ export function getVisibleTeammates(username: string, patchTimestamp?: string): 
     const placeholders = teamNames.map(() => "?").join(",");
 
     // Teammates: active members of any shared team whose sharing was enabled at the patch timestamp.
-    const rows = db.prepare(`
+    const rows = db
+        .prepare(
+            `
         SELECT DISTINCT tm.username
         FROM team_members tm
         JOIN team_sharing ts ON ts.team_name = tm.team_name AND ts.username = tm.username
@@ -38,7 +44,9 @@ export function getVisibleTeammates(username: string, patchTimestamp?: string): 
                   AND (? IS NULL OR ts.disabled_at > ?)
               )
           )
-    `).all(...teamNames, username, patchTimestamp ?? null, patchTimestamp ?? null) as Array<{ username: string }>;
+    `,
+        )
+        .all(...teamNames, username, patchTimestamp ?? null, patchTimestamp ?? null) as Array<{ username: string }>;
 
     return new Set(rows.map((r) => r.username));
 }
@@ -48,7 +56,9 @@ export function getVisibleTeammates(username: string, patchTimestamp?: string): 
  * that includes the viewer as an active member.
  */
 export function isSharingEnabledFor(sharerUsername: string, viewerUsername: string): boolean {
-    const row = db.prepare(`
+    const row = db
+        .prepare(
+            `
         SELECT 1 FROM team_members sharer
         JOIN team_members viewer ON sharer.team_name = viewer.team_name
         JOIN team_sharing ts ON ts.team_name = sharer.team_name AND ts.username = sharer.username
@@ -56,7 +66,9 @@ export function isSharingEnabledFor(sharerUsername: string, viewerUsername: stri
           AND viewer.username = ? AND viewer.status = 'active'
           AND ts.sharing_enabled = 1
         LIMIT 1
-    `).get(sharerUsername, viewerUsername);
+    `,
+        )
+        .get(sharerUsername, viewerUsername);
 
     return !!row;
 }
