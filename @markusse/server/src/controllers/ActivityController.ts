@@ -1,4 +1,6 @@
-import { JsonController, Post, Body, Get, QueryParam, BadRequestError } from "routing-controllers";
+import { JsonController, Post, Body, Get, QueryParam, BadRequestError, UseBefore, Req } from "routing-controllers";
+import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
+import { getVisibleTeammates } from "../database/teamQueries";
 import {
     ActivityBatchDto,
     ActivityDto,
@@ -29,6 +31,12 @@ interface PatchSyncItem {
     patch: string;
     timestamp: string | Date;
     committed?: boolean;
+    changeType?: PatchDto["changeType"];
+    workingState?: PatchDto["workingState"];
+    commitSha?: PatchDto["commitSha"];
+    commitShortSha?: PatchDto["commitShortSha"];
+    commitMessage?: PatchDto["commitMessage"];
+    contentHash?: PatchDto["contentHash"];
 }
 
 interface PatchSyncRequest {
@@ -90,9 +98,9 @@ function normalizeAndValidateIdentity(userName: string): string {
  */
 function createPatchCompositeKey(patch: StoredPatch | PatchDto): string {
     const normalizedBranch = normalizeUpstreamBranch(patch.upstreamBranch) ?? "";
-    const changeType = (patch as any).changeType || "working";
-    const workingState = (patch as any).workingState || "";
-    const commitSha = (patch as any).commitSha || "";
+    const changeType = patch.changeType || "working";
+    const workingState = patch.workingState || "";
+    const commitSha = patch.commitSha || "";
     return `${patch.repositoryRemoteUrl}:${normalizedBranch}:${patch.userName}:${patch.repositoryFilePath}:${changeType}:${workingState}:${commitSha}`;
 }
 
@@ -199,14 +207,21 @@ export class ActivityController {
     /**
      * Returns files organized by repository, with active users and associated patches.
      * Only includes files that currently have active editors.
+     * Requires authentication; results are scoped to the caller's visible teammates.
      */
     @Get("/files")
+    @UseBefore(requireAuth)
     getFiles(
+        @Req() req: AuthenticatedRequest,
         @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
         @QueryParam("upstreamBranch") upstreamBranch?: string,
     ): GetFilesResponse {
-        const allActivities = Array.from(activityStore.values()).flat();
-        const allPatches = Array.from(patchStore.values());
+        const viewerUsername = req.authenticatedUsername!;
+        const visibleUsers = getVisibleTeammates(viewerUsername);
+        // The viewer also sees their own data.
+        visibleUsers.add(viewerUsername);
+        const allActivities = Array.from(activityStore.values()).flat().filter((a) => visibleUsers.has(a.userName));
+        const allPatches = Array.from(patchStore.values()).filter((p) => visibleUsers.has(p.userName));
         const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         // Collect unique files with active users
@@ -298,15 +313,22 @@ export class ActivityController {
     /**
      * Returns shared patches, optionally filtered by repository, file, user, and branch.
      * Returns latest-state-only patches (one per composite key).
+     * Requires authentication; results are scoped to the caller's visible teammates.
      */
     @Get("/patches")
+    @UseBefore(requireAuth)
     getPatches(
+        @Req() req: AuthenticatedRequest,
         @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
         @QueryParam("repositoryFilePath") repositoryFilePath?: string,
         @QueryParam("userName") userName?: string,
         @QueryParam("upstreamBranch") upstreamBranch?: string,
     ): GetPatchesResponse {
-        let patches = Array.from(patchStore.values());
+        const viewerUsername = req.authenticatedUsername!;
+        const visibleUsers = getVisibleTeammates(viewerUsername);
+        visibleUsers.add(viewerUsername);
+
+        let patches = Array.from(patchStore.values()).filter((p) => visibleUsers.has(p.userName));
         const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         if (repositoryRemoteUrl) {
@@ -339,10 +361,13 @@ export class ActivityController {
     /**
      * Receives a generated git patch and stores it using latest-state-only model.
      * Each composite key (repo+branch+user+file+changeType+workingState+commitSha) maps to one patch.
+     * Requires authentication; the authenticated username overrides any userName in the payload.
      */
     @Post("/patches")
-    async receivePatch(@Body() patch: PatchDto): Promise<PostPatchesResponse> {
-        const normalizedUserName = normalizeAndValidateIdentity(patch.userName);
+    @UseBefore(requireAuth)
+    async receivePatch(@Req() req: AuthenticatedRequest, @Body() patch: PatchDto): Promise<PostPatchesResponse> {
+        const authenticatedUsername = req.authenticatedUsername!;
+        const normalizedUserName = normalizeAndValidateIdentity(authenticatedUsername);
         const normalizedUpstreamBranch = normalizeUpstreamBranch(patch.upstreamBranch);
 
         const storedPatch: StoredPatch = {
@@ -367,9 +392,12 @@ export class ActivityController {
     /**
      * Replaces all previously uploaded patches for a user/repository/branch with the currently active patch list.
      * Uses latest-state-only model: each composite key receives exactly one patch per sync.
+     * Requires authentication; the authenticated username is used as the canonical identity.
      */
     @Post("/patches/sync")
-    async synchronizePatches(@Body() body: PatchSyncRequest): Promise<PostPatchesResponse> {
+    @UseBefore(requireAuth)
+    async synchronizePatches(@Req() req: AuthenticatedRequest, @Body() body: PatchSyncRequest): Promise<PostPatchesResponse> {
+        const authenticatedUsername = req.authenticatedUsername!;
         const synchronizedPatches = Array.isArray(body?.patches) ? body.patches : [];
         const resolvedRepositoryRemoteUrl =
             body?.repositoryRemoteUrl?.trim() ||
@@ -379,15 +407,9 @@ export class ActivityController {
             throw new BadRequestError("repositoryRemoteUrl is required (request-level or patch item-level).");
         }
 
-        const resolvedUserName =
-            body?.userName?.trim() || synchronizedPatches.find((patch) => patch.userName)?.userName?.trim();
+        // Authenticated username takes precedence over any userName in the request body.
+        const normalizedUserName = normalizeAndValidateIdentity(authenticatedUsername);
         const normalizedRequestBranch = normalizeUpstreamBranch(body?.upstreamBranch);
-
-        if (!resolvedUserName) {
-            throw new BadRequestError("userName is required (request-level or patch item-level).");
-        }
-
-        const normalizedUserName = normalizeAndValidateIdentity(resolvedUserName);
 
         // Remove all patches matching this user/repository/branch scope
         let removedCount = 0;
@@ -428,12 +450,12 @@ export class ActivityController {
                 timestamp: normalizeSyncTimestamp(patch.timestamp),
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                 receivedAt: new Date().toISOString(),
-                ...((patch as any).changeType && { changeType: (patch as any).changeType }),
-                ...((patch as any).workingState && { workingState: (patch as any).workingState }),
-                ...((patch as any).commitSha && { commitSha: (patch as any).commitSha }),
-                ...((patch as any).commitShortSha && { commitShortSha: (patch as any).commitShortSha }),
-                ...((patch as any).commitMessage && { commitMessage: (patch as any).commitMessage }),
-                ...((patch as any).contentHash && { contentHash: (patch as any).contentHash }),
+                ...(patch.changeType && { changeType: patch.changeType }),
+                ...(patch.workingState && { workingState: patch.workingState }),
+                ...(patch.commitSha && { commitSha: patch.commitSha }),
+                ...(patch.commitShortSha && { commitShortSha: patch.commitShortSha }),
+                ...(patch.commitMessage && { commitMessage: patch.commitMessage }),
+                ...(patch.contentHash && { contentHash: patch.contentHash }),
             };
 
             const compositeKey = createPatchCompositeKey(storedPatch);
@@ -451,14 +473,21 @@ export class ActivityController {
 
     /**
      * Returns stored activities, optionally filtered by repository and user.
+     * Requires authentication; results are scoped to the caller's visible teammates.
      */
     @Get("/activities")
+    @UseBefore(requireAuth)
     getActivities(
+        @Req() req: AuthenticatedRequest,
         @QueryParam("repositoryRemoteUrl") repositoryRemoteUrl?: string,
         @QueryParam("userName") userName?: string,
         @QueryParam("upstreamBranch") upstreamBranch?: string,
     ): GetActivitiesResponse {
-        let activities = Array.from(activityStore.values()).flat();
+        const viewerUsername = req.authenticatedUsername!;
+        const visibleUsers = getVisibleTeammates(viewerUsername);
+        visibleUsers.add(viewerUsername);
+
+        let activities = Array.from(activityStore.values()).flat().filter((a) => visibleUsers.has(a.userName));
         const normalizedFilterBranch = normalizeUpstreamBranch(upstreamBranch);
 
         if (repositoryRemoteUrl) {
@@ -484,14 +513,18 @@ export class ActivityController {
 
     /**
      * Ingests activity events from plugin clients and stores them in memory.
+     * Requires authentication; the authenticated username overrides any userName in the payload.
      */
     @Post("/activities")
-    async receiveActivities(@Body() body: ActivityBatchDto): Promise<PostActivitiesResponse> {
-        console.log(`Received ${body.activities.length} activities`);
+    @UseBefore(requireAuth)
+    async receiveActivities(@Req() req: AuthenticatedRequest, @Body() body: ActivityBatchDto): Promise<PostActivitiesResponse> {
+        const authenticatedUsername = req.authenticatedUsername!;
+        console.log(`Received ${body.activities.length} activities from ${authenticatedUsername}`);
 
         // Process each activity
         body.activities.forEach((activity) => {
-            const normalizedUserName = normalizeAndValidateIdentity(activity.userName);
+            // Enforce that stored userName always reflects the authenticated identity.
+            const normalizedUserName = normalizeAndValidateIdentity(authenticatedUsername);
             const normalizedUpstreamBranch = normalizeUpstreamBranch(activity.upstreamBranch);
 
             // Partition by repository + user + file so each stream is independently append-only.

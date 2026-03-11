@@ -17,6 +17,22 @@ import {
 } from "@work-share/types";
 import { validate } from "class-validator";
 import { plainToClass } from "class-transformer";
+import { NextFunction, Request, Response } from "express";
+
+// Bypass JWT auth in unit tests; the x-test-username header drives the identity.
+jest.mock("../middleware/auth", () => ({
+    requireAuth: (req: Request & { authenticatedUsername?: string }, _res: Response, next: NextFunction) => {
+        req.authenticatedUsername = req.headers["x-test-username"] as string | undefined ?? "Alice";
+        next();
+    },
+    silentRefresh: (_req: Request, _res: Response, next: NextFunction) => next(),
+}));
+
+// Return all test usernames as visible teammates so visibility filtering is a no-op.
+jest.mock("../database/teamQueries", () => ({
+    getVisibleTeammates: () => new Set(["Alice", "Bob", "Charlie", "Dana"]),
+    isSharingEnabledFor: () => true,
+}));
 
 describe("ActivityController", () => {
     let app: express.Application;
@@ -73,7 +89,11 @@ describe("ActivityController", () => {
                 ],
             };
 
-            const response = await request(app).post("/activities").send(activityBatch).expect(200);
+            const response = await request(app)
+                .post("/activities")
+                .set("x-test-username", "Alice")
+                .send(activityBatch)
+                .expect(200);
 
             // Validate response structure
             expect(response.body).toHaveProperty("success");
@@ -100,7 +120,7 @@ describe("ActivityController", () => {
                 ],
             };
 
-            await request(app).post("/activities").send(invalidBatch).expect(400);
+            await request(app).post("/activities").set("x-test-username", "Alice").send(invalidBatch).expect(400);
         });
 
         it("should reject activity with invalid action", async () => {
@@ -116,15 +136,15 @@ describe("ActivityController", () => {
                 ],
             };
 
-            await request(app).post("/activities").send(invalidBatch).expect(400);
+            await request(app).post("/activities").set("x-test-username", "Alice").send(invalidBatch).expect(400);
         });
 
-        it('should reject activity with "unknown user"', async () => {
-            const invalidBatch = {
+        it("should store activities using the authenticated username, not the body userName", async () => {
+            const activityBatch: ActivityBatchDto = {
                 activities: [
                     {
                         filePath: "/src/index.ts",
-                        userName: "unknown user",
+                        userName: "ignored-body-name",
                         timestamp: new Date().toISOString(),
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
@@ -132,7 +152,20 @@ describe("ActivityController", () => {
                 ],
             };
 
-            await request(app).post("/activities").send(invalidBatch).expect(400);
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Alice")
+                .send(activityBatch)
+                .expect(200);
+
+            const response = await request(app)
+                .get("/activities")
+                .set("x-test-username", "Alice")
+                .query({ userName: "Alice" })
+                .expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.activities[0].userName).toBe("Alice");
         });
 
         it("should handle multiple activities in batch", async () => {
@@ -148,7 +181,7 @@ describe("ActivityController", () => {
                     },
                     {
                         filePath: "/src/app.ts",
-                        userName: "Bob",
+                        userName: "Alice",
                         timestamp: new Date().toISOString(),
                         action: "edit",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
@@ -156,7 +189,11 @@ describe("ActivityController", () => {
                 ],
             };
 
-            const response = await request(app).post("/activities").send(activityBatch).expect(200);
+            const response = await request(app)
+                .post("/activities")
+                .set("x-test-username", "Alice")
+                .send(activityBatch)
+                .expect(200);
 
             expect(response.body.success).toBe(true);
             expect(response.body.message).toContain("2 activities");
@@ -165,32 +202,41 @@ describe("ActivityController", () => {
 
     describe("GET /activities", () => {
         beforeEach(async () => {
-            // Seed some activities
-            const activityBatch: ActivityBatchDto = {
-                activities: [
-                    {
-                        filePath: "/src/index.ts",
-                        userName: "Alice",
-                        timestamp: new Date().toISOString(),
-                        action: "open",
-                        repositoryRemoteUrl: "https://github.com/org/repo.git",
-                        upstreamBranch: "origin/main",
-                    },
-                    {
-                        filePath: "/src/app.ts",
-                        userName: "Bob",
-                        timestamp: new Date().toISOString(),
-                        action: "edit",
-                        repositoryRemoteUrl: "https://github.com/org/other.git",
-                        upstreamBranch: "origin/feature",
-                    },
-                ],
-            };
-            await request(app).post("/activities").send(activityBatch);
+            // Seed activities for Alice and Bob using per-user request headers.
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Alice")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/index.ts",
+                            userName: "Alice",
+                            timestamp: new Date().toISOString(),
+                            action: "open",
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            upstreamBranch: "origin/main",
+                        },
+                    ],
+                });
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Bob")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/app.ts",
+                            userName: "Bob",
+                            timestamp: new Date().toISOString(),
+                            action: "edit",
+                            repositoryRemoteUrl: "https://github.com/org/other.git",
+                            upstreamBranch: "origin/feature",
+                        },
+                    ],
+                });
         });
 
         it("should return all activities with correct response type", async () => {
-            const response = await request(app).get("/activities").expect(200);
+            const response = await request(app).get("/activities").set("x-test-username", "Alice").expect(200);
 
             // Validate response structure
             expect(response.body).toHaveProperty("count");
@@ -207,6 +253,7 @@ describe("ActivityController", () => {
         it("should filter activities by repositoryRemoteUrl", async () => {
             const response = await request(app)
                 .get("/activities")
+                .set("x-test-username", "Alice")
                 .query({ repositoryRemoteUrl: "https://github.com/org/repo.git" })
                 .expect(200);
 
@@ -215,14 +262,22 @@ describe("ActivityController", () => {
         });
 
         it("should filter activities by userName", async () => {
-            const response = await request(app).get("/activities").query({ userName: "Alice" }).expect(200);
+            const response = await request(app)
+                .get("/activities")
+                .set("x-test-username", "Alice")
+                .query({ userName: "Alice" })
+                .expect(200);
 
             expect(response.body.count).toBe(1);
             expect(response.body.activities[0].userName).toBe("Alice");
         });
 
         it("should filter activities by upstreamBranch", async () => {
-            const response = await request(app).get("/activities").query({ upstreamBranch: "origin/main" }).expect(200);
+            const response = await request(app)
+                .get("/activities")
+                .set("x-test-username", "Alice")
+                .query({ upstreamBranch: "origin/main" })
+                .expect(200);
 
             expect(response.body.count).toBe(1);
             expect(response.body.activities[0].upstreamBranch).toBe("origin/main");
@@ -241,7 +296,11 @@ describe("ActivityController", () => {
                 timestamp: new Date().toISOString(),
             };
 
-            const response = await request(app).post("/patches").send(patch).expect(200);
+            const response = await request(app)
+                .post("/patches")
+                .set("x-test-username", "Alice")
+                .send(patch)
+                .expect(200);
 
             // Validate response structure
             expect(response.body).toHaveProperty("success");
@@ -262,7 +321,7 @@ describe("ActivityController", () => {
                 // Missing repositoryFilePath, baseCommit, patch, timestamp
             };
 
-            await request(app).post("/patches").send(invalidPatch).expect(400);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(invalidPatch).expect(400);
         });
 
         it("should not store duplicate patches", async () => {
@@ -277,11 +336,11 @@ describe("ActivityController", () => {
             };
 
             // Submit same patch twice
-            await request(app).post("/patches").send(patch).expect(200);
-            await request(app).post("/patches").send(patch).expect(200);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(patch).expect(200);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(patch).expect(200);
 
             // Verify only one patch is stored
-            const response = await request(app).get("/patches").expect(200);
+            const response = await request(app).get("/patches").set("x-test-username", "Alice").expect(200);
             const matchingPatches = response.body.patches.filter(
                 (p: StoredPatch) =>
                     p.userName === "Alice" && p.repositoryFilePath === "src/index.ts" && p.baseCommit === "abc123",
@@ -292,7 +351,7 @@ describe("ActivityController", () => {
 
     describe("GET /patches", () => {
         beforeEach(async () => {
-            // Seed some patches
+            // Seed patches using per-user headers so stored usernames are correct.
             const patch1: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Alice",
@@ -311,12 +370,12 @@ describe("ActivityController", () => {
                 patch: "diff --git a/src/app.ts b/src/app.ts\\n...",
                 timestamp: new Date().toISOString(),
             };
-            await request(app).post("/patches").send(patch1);
-            await request(app).post("/patches").send(patch2);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(patch1);
+            await request(app).post("/patches").set("x-test-username", "Bob").send(patch2);
         });
 
         it("should return all patches with correct response type", async () => {
-            const response = await request(app).get("/patches").expect(200);
+            const response = await request(app).get("/patches").set("x-test-username", "Alice").expect(200);
 
             // Validate response structure
             expect(response.body).toHaveProperty("count");
@@ -345,6 +404,7 @@ describe("ActivityController", () => {
         it("should filter patches by repositoryRemoteUrl", async () => {
             const response = await request(app)
                 .get("/patches")
+                .set("x-test-username", "Alice")
                 .query({ repositoryRemoteUrl: "https://github.com/org/repo.git" })
                 .expect(200);
 
@@ -355,6 +415,7 @@ describe("ActivityController", () => {
         it("should filter patches by repositoryFilePath", async () => {
             const response = await request(app)
                 .get("/patches")
+                .set("x-test-username", "Alice")
                 .query({ repositoryFilePath: "src/index.ts" })
                 .expect(200);
 
@@ -363,21 +424,29 @@ describe("ActivityController", () => {
         });
 
         it("should filter patches by userName", async () => {
-            const response = await request(app).get("/patches").query({ userName: "Alice" }).expect(200);
+            const response = await request(app)
+                .get("/patches")
+                .set("x-test-username", "Alice")
+                .query({ userName: "Alice" })
+                .expect(200);
 
             expect(response.body.count).toBe(1);
             expect(response.body.patches[0].userName).toBe("Alice");
         });
 
         it("should filter patches by upstreamBranch", async () => {
-            const response = await request(app).get("/patches").query({ upstreamBranch: "origin/main" }).expect(200);
+            const response = await request(app)
+                .get("/patches")
+                .set("x-test-username", "Alice")
+                .query({ upstreamBranch: "origin/main" })
+                .expect(200);
 
             expect(response.body.count).toBe(1);
             expect(response.body.patches[0].upstreamBranch).toBe("origin/main");
         });
 
         it("should sort patches by timestamp descending", async () => {
-            const response = await request(app).get("/patches").expect(200);
+            const response = await request(app).get("/patches").set("x-test-username", "Alice").expect(200);
 
             const timestamps = response.body.patches.map((p: StoredPatch) => p.timestamp);
             const sortedTimestamps = [...timestamps].sort((a, b) => b.localeCompare(a));
@@ -396,10 +465,11 @@ describe("ActivityController", () => {
                 timestamp: new Date(Date.now() - 1000).toISOString(),
             };
 
-            await request(app).post("/patches").send(stalePatch).expect(200);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(stalePatch).expect(200);
 
             await request(app)
                 .post("/patches/sync")
+                .set("x-test-username", "Alice")
                 .send({
                     repositoryRemoteUrl: "https://github.com/org/repo.git",
                     userName: "Alice",
@@ -416,6 +486,7 @@ describe("ActivityController", () => {
 
             const patchesResponse = await request(app)
                 .get("/patches")
+                .set("x-test-username", "Alice")
                 .query({ repositoryRemoteUrl: "https://github.com/org/repo.git", userName: "Alice" })
                 .expect(200);
 
@@ -441,11 +512,12 @@ describe("ActivityController", () => {
                 timestamp: new Date().toISOString(),
             };
 
-            await request(app).post("/patches").send(alicePatch).expect(200);
-            await request(app).post("/patches").send(bobPatch).expect(200);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(alicePatch).expect(200);
+            await request(app).post("/patches").set("x-test-username", "Bob").send(bobPatch).expect(200);
 
             await request(app)
                 .post("/patches/sync")
+                .set("x-test-username", "Alice")
                 .send({
                     repositoryRemoteUrl: "https://github.com/org/repo.git",
                     userName: "Alice",
@@ -453,7 +525,7 @@ describe("ActivityController", () => {
                 })
                 .expect(200);
 
-            const allPatches = await request(app).get("/patches").expect(200);
+            const allPatches = await request(app).get("/patches").set("x-test-username", "Alice").expect(200);
             const alicePatches = allPatches.body.patches.filter((patch: StoredPatch) => patch.userName === "Alice");
             const bobPatches = allPatches.body.patches.filter((patch: StoredPatch) => patch.userName === "Bob");
 
@@ -464,6 +536,7 @@ describe("ActivityController", () => {
         it("should accept SharedPatch-compatible items with repository and user fields", async () => {
             await request(app)
                 .post("/patches/sync")
+                .set("x-test-username", "Alice")
                 .send({
                     repositoryRemoteUrl: "https://github.com/org/repo.git",
                     userName: "Alice",
@@ -483,6 +556,7 @@ describe("ActivityController", () => {
 
             const response = await request(app)
                 .get("/patches")
+                .set("x-test-username", "Alice")
                 .query({ repositoryRemoteUrl: "https://github.com/org/repo.git", userName: "Alice" })
                 .expect(200);
 
@@ -493,6 +567,7 @@ describe("ActivityController", () => {
         it("should resolve repository and user from patch items when request-level fields are missing", async () => {
             await request(app)
                 .post("/patches/sync")
+                .set("x-test-username", "Alice")
                 .send({
                     patches: [
                         {
@@ -509,6 +584,7 @@ describe("ActivityController", () => {
 
             const response = await request(app)
                 .get("/patches")
+                .set("x-test-username", "Alice")
                 .query({ repositoryRemoteUrl: "https://github.com/org/repo.git", userName: "Alice" })
                 .expect(200);
 
@@ -519,28 +595,37 @@ describe("ActivityController", () => {
 
     describe("GET /files", () => {
         beforeEach(async () => {
-            // Seed activities to create active files
-            const activityBatch: ActivityBatchDto = {
-                activities: [
-                    {
-                        filePath: "/src/index.ts",
-                        userName: "Alice",
-                        timestamp: new Date().toISOString(),
-                        action: "open",
-                        repositoryRemoteUrl: "https://github.com/org/repo.git",
-                        upstreamBranch: "origin/main",
-                    },
-                    {
-                        filePath: "/src/index.ts",
-                        userName: "Bob",
-                        timestamp: new Date().toISOString(),
-                        action: "edit",
-                        repositoryRemoteUrl: "https://github.com/org/repo.git",
-                        upstreamBranch: "origin/main",
-                    },
-                ],
-            };
-            await request(app).post("/activities").send(activityBatch);
+            // Seed activities for Alice and Bob using per-user headers.
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Alice")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/index.ts",
+                            userName: "Alice",
+                            timestamp: new Date().toISOString(),
+                            action: "open",
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            upstreamBranch: "origin/main",
+                        },
+                    ],
+                });
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Bob")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/index.ts",
+                            userName: "Bob",
+                            timestamp: new Date().toISOString(),
+                            action: "edit",
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            upstreamBranch: "origin/main",
+                        },
+                    ],
+                });
 
             // Seed a patch for the file
             const patch: PatchDto = {
@@ -552,11 +637,11 @@ describe("ActivityController", () => {
                 patch: "diff --git a/src/index.ts b/src/index.ts\\n...",
                 timestamp: new Date().toISOString(),
             };
-            await request(app).post("/patches").send(patch);
+            await request(app).post("/patches").set("x-test-username", "Alice").send(patch);
         });
 
         it("should return files organized by repository with correct response type", async () => {
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             // Validate response structure
             expect(response.body).toHaveProperty("count");
@@ -570,7 +655,7 @@ describe("ActivityController", () => {
         });
 
         it("should include active users for each file", async () => {
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             const repo = response.body.repositories[0];
             expect(repo.files).toHaveLength(1); // Only index.ts has active users
@@ -579,7 +664,7 @@ describe("ActivityController", () => {
         });
 
         it("should include patch count for each file", async () => {
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             const repo = response.body.repositories[0];
             expect(repo.files[0].patchCount).toBe(1);
@@ -599,7 +684,11 @@ describe("ActivityController", () => {
                     },
                 ],
             };
-            await request(app).post("/activities").send(absoluteActivityBatch).expect(200);
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Dana")
+                .send(absoluteActivityBatch)
+                .expect(200);
 
             const relativePatch: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
@@ -610,9 +699,9 @@ describe("ActivityController", () => {
                 patch: "diff --git a/src/feature.ts b/src/feature.ts\n...",
                 timestamp: new Date().toISOString(),
             };
-            await request(app).post("/patches").send(relativePatch).expect(200);
+            await request(app).post("/patches").set("x-test-username", "Dana").send(relativePatch).expect(200);
 
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
             const repo = response.body.repositories[0];
             const featureFile = repo.files.find(
                 (file: { repositoryFilePath: string }) => file.repositoryFilePath === "src/feature.ts",
@@ -624,7 +713,7 @@ describe("ActivityController", () => {
         });
 
         it("should extract repository and file names correctly", async () => {
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             const repo = response.body.repositories[0];
             expect(repo.repositoryName).toBe("repo"); // .git extension is removed
@@ -634,6 +723,7 @@ describe("ActivityController", () => {
         it("should filter files by repositoryRemoteUrl", async () => {
             const response = await request(app)
                 .get("/files")
+                .set("x-test-username", "Alice")
                 .query({ repositoryRemoteUrl: "https://github.com/org/repo.git" })
                 .expect(200);
 
@@ -642,7 +732,11 @@ describe("ActivityController", () => {
         });
 
         it("should filter files by upstreamBranch", async () => {
-            const response = await request(app).get("/files").query({ upstreamBranch: "origin/main" }).expect(200);
+            const response = await request(app)
+                .get("/files")
+                .set("x-test-username", "Alice")
+                .query({ upstreamBranch: "origin/main" })
+                .expect(200);
 
             expect(response.body.repositories).toHaveLength(1);
             expect(response.body.repositories[0].upstreamBranch).toBe("origin/main");
@@ -651,6 +745,7 @@ describe("ActivityController", () => {
         it("should keep separate repository groups for different upstream branches", async () => {
             await request(app)
                 .post("/activities")
+                .set("x-test-username", "Charlie")
                 .send({
                     activities: [
                         {
@@ -665,7 +760,7 @@ describe("ActivityController", () => {
                 })
                 .expect(200);
 
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             expect(response.body.repositories).toHaveLength(2);
             expect(
@@ -674,30 +769,39 @@ describe("ActivityController", () => {
         });
 
         it("should only include files with active users", async () => {
-            // Close the file for both users
-            const closeBatch: ActivityBatchDto = {
-                activities: [
-                    {
-                        filePath: "/src/index.ts",
-                        userName: "Alice",
-                        timestamp: new Date().toISOString(),
-                        action: "close",
-                        repositoryRemoteUrl: "https://github.com/org/repo.git",
-                        upstreamBranch: "origin/main",
-                    },
-                    {
-                        filePath: "/src/index.ts",
-                        userName: "Bob",
-                        timestamp: new Date().toISOString(),
-                        action: "close",
-                        repositoryRemoteUrl: "https://github.com/org/repo.git",
-                        upstreamBranch: "origin/main",
-                    },
-                ],
-            };
-            await request(app).post("/activities").send(closeBatch);
+            // Close the file for Alice and Bob using per-user headers.
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Alice")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/index.ts",
+                            userName: "Alice",
+                            timestamp: new Date().toISOString(),
+                            action: "close",
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            upstreamBranch: "origin/main",
+                        },
+                    ],
+                });
+            await request(app)
+                .post("/activities")
+                .set("x-test-username", "Bob")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/index.ts",
+                            userName: "Bob",
+                            timestamp: new Date().toISOString(),
+                            action: "close",
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            upstreamBranch: "origin/main",
+                        },
+                    ],
+                });
 
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             // Should return no repositories since no files have active users
             expect(response.body.count).toBe(0);
@@ -718,9 +822,9 @@ describe("ActivityController", () => {
                     },
                 ],
             };
-            await request(app).post("/activities").send(activityBatch);
+            await request(app).post("/activities").set("x-test-username", "Charlie").send(activityBatch);
 
-            const response = await request(app).get("/files").expect(200);
+            const response = await request(app).get("/files").set("x-test-username", "Alice").expect(200);
 
             const repo = response.body.repositories[0];
             expect(repo.files).toHaveLength(2);
