@@ -1,2 +1,8 @@
 {
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /home/markusse/projects/vs-code-plugins/work-share/@markusse/vs-code-plugins/work-share/shared && npm run$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

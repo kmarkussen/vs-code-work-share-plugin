@@ -105,9 +105,9 @@ suite("FileTreeDataProvider Test Suite", () => {
                     repositoryRemoteUrl: "https://github.com/org/repo.git",
                     userName: "Bob",
                     upstreamBranch: "origin/main",
-                    repositoryFilePath: "src/a.ts",
+                    repositoryFilePath: "src/features/a.ts",
                     baseCommit: "abc123",
-                    patch: "diff --git a/src/a.ts b/src/a.ts\n...",
+                    patch: "diff --git a/src/features/a.ts b/src/features/a.ts\n...",
                     timestamp: new Date("2026-03-10T10:00:00.000Z"),
                     changeType: "pending",
                     commitShortSha: "abc123",
@@ -117,9 +117,9 @@ suite("FileTreeDataProvider Test Suite", () => {
                     repositoryRemoteUrl: "https://github.com/org/repo.git",
                     userName: "Bob",
                     upstreamBranch: "origin/main",
-                    repositoryFilePath: "src/b.ts",
+                    repositoryFilePath: "src/features/b.ts",
                     baseCommit: "abc123",
-                    patch: "diff --git a/src/b.ts b/src/b.ts\n...",
+                    patch: "diff --git a/src/features/b.ts b/src/features/b.ts\n...",
                     timestamp: new Date("2026-03-10T10:01:00.000Z"),
                     changeType: "working",
                     workingState: "staged",
@@ -155,7 +155,12 @@ suite("FileTreeDataProvider Test Suite", () => {
         assert.strictEqual(repoGroups.length, 1);
         assert.ok(String(repoGroups[0].label).includes("repo / origin/main"));
 
-        const patchLeaves = await provider.getChildren(repoGroups[0]);
+        const topLevelDirectories = await provider.getChildren(repoGroups[0]);
+        assert.strictEqual(topLevelDirectories.length, 1);
+        assert.strictEqual(topLevelDirectories[0].kind, "user-directory");
+        assert.strictEqual(String(topLevelDirectories[0].label), "src/features");
+
+        const patchLeaves = await provider.getChildren(topLevelDirectories[0]);
         assert.strictEqual(patchLeaves.length, 2);
         assert.ok(patchLeaves.some((item) => String(item.label).includes("Refactor parser")));
     });

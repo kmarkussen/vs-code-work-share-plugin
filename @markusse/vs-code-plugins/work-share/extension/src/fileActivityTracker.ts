@@ -28,8 +28,7 @@ export class FileActivityTracker {
     private lastDetachedHeadWarningAtByRepositoryRoot = new Map<string, number>();
     private remoteConflictAvailabilityIssueByRepositoryRoot = new Map<string, string>();
     private lastNoUpstreamWarningAtByRepositoryRoot = new Map<string, number>();
-    private static readonly UPSTREAM_BRANCH_BY_REPOSITORY_ROOT_KEY =
-        "workShare.upstreamBranchByRepositoryRoot";
+    private static readonly UPSTREAM_BRANCH_BY_REPOSITORY_ROOT_KEY = "workShare.upstreamBranchByRepositoryRoot";
     private gitContext: GitContextService;
     private identityService: UserIdentityService;
     private patchSharingService: PatchSharingService;
@@ -110,6 +109,64 @@ export class FileActivityTracker {
     public getRepositoryRelativeFilePath(filePath: string): string | undefined {
         return this.gitContext.getRepositoryRelativeFilePath(filePath);
     }
+
+    /**
+     * Opens a repository-relative file path in an editor.
+     *
+     * Resolution order:
+     * 1. Repository resolved from provided remote URL.
+     * 2. Active editor repository.
+     * 3. Workspace repository.
+     * 4. Workspace folder roots.
+     */
+    public async openRepositoryFileInEditor(
+        repositoryFilePath: string,
+        repositoryRemoteUrl?: string,
+    ): Promise<boolean> {
+        await this.gitContext.initialize();
+
+        const candidateRoots: string[] = [];
+        const addRoot = (rootPath: string | undefined) => {
+            if (!rootPath) {
+                return;
+            }
+            const normalized = rootPath.replace(/\\/g, "/");
+            if (!candidateRoots.includes(normalized)) {
+                candidateRoots.push(normalized);
+            }
+        };
+
+        if (repositoryRemoteUrl) {
+            const repository = await this.gitContext.resolveRepositoryByRemoteUrl(repositoryRemoteUrl);
+            addRoot(repository?.rootUri.fsPath);
+        }
+
+        const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+        if (activeFilePath) {
+            addRoot(this.gitContext.resolveRepositoryForFile(activeFilePath)?.rootUri.fsPath);
+        }
+
+        addRoot(this.gitContext.resolveWorkspaceRepository()?.rootUri.fsPath);
+
+        for (const workspaceFolder of vscode.workspace.workspaceFolders ?? []) {
+            addRoot(workspaceFolder.uri.fsPath);
+        }
+
+        for (const rootPath of candidateRoots) {
+            const absolutePath = path.join(rootPath, repositoryFilePath);
+            try {
+                await fs.access(absolutePath);
+                const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath));
+                await vscode.window.showTextDocument(document, { preview: false });
+                return true;
+            } catch {
+                // Keep trying next candidate root.
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Determines if the user is actively sharing (identity resolved and no connection issues).
      * Used by the tree view to display sharing status icon.
@@ -125,14 +182,27 @@ export class FileActivityTracker {
     private async autoCheckConflictsOnSave(filePath: string): Promise<void> {
         const config = vscode.workspace.getConfiguration("workShare");
         const autoCheckEnabled = config.get<boolean>("autoCheckConflictsOnSave", false);
-        if (!autoCheckEnabled) {
+
+        const repositoryFilePath = this.gitContext.getRepositoryRelativeFilePath(filePath);
+        const hasTrackedConflictState =
+            repositoryFilePath !== undefined && this.projectFileConflicts.has(repositoryFilePath);
+
+        // Always refresh files that already have a conflict entry so stale tree nodes clear on save,
+        // even when proactive conflict checks are disabled.
+        if (!autoCheckEnabled && !hasTrackedConflictState) {
             return;
         }
 
         const status = await this.updateConflictStatusForFile(filePath);
 
-        this.logger?.info("Auto conflict check on save completed.", { filePath, status });
-        if (status === "conflict") {
+        this.logger?.info("Conflict status refresh on save completed.", {
+            filePath,
+            status,
+            autoCheckEnabled,
+            hasTrackedConflictState,
+        });
+
+        if (autoCheckEnabled && status === "conflict") {
             vscode.window.showWarningMessage(
                 "Work Share: Possible incoming or remote-tracking merge conflict detected for saved file.",
             );
@@ -1300,6 +1370,19 @@ export class FileActivityTracker {
         try {
             await fs.writeFile(patchFilePath, patch.patch, "utf8");
 
+            // Compute local semantic edits once. Whitespace-only local changes should not be
+            // treated as potential merge conflicts with incoming patches.
+            const localSemanticDiffResult = await this.gitContext.runGitCommand(repositoryRootPath, [
+                "diff",
+                "--ignore-all-space",
+                "--ignore-blank-lines",
+                "HEAD",
+                "--",
+                patch.repositoryFilePath,
+            ]);
+            const localSemanticDiff = localSemanticDiffResult.stdout;
+            const hasSemanticLocalChanges = localSemanticDiff.trim().length > 0;
+
             // Dry-run 3-way apply against the local working tree.
             const applyCheckResult = await this.gitContext.runGitCommand(repositoryRootPath, [
                 "apply",
@@ -1309,25 +1392,59 @@ export class FileActivityTracker {
             ]);
 
             if (applyCheckResult.exitCode !== 0) {
-                this.logger?.info("Conflict detector: definite conflict — patch apply failed.", {
-                    repositoryFilePath: patch.repositoryFilePath,
-                    fromUser: patch.userName,
-                    stderr: applyCheckResult.stderr,
-                });
-                return "definite";
+                if (!hasSemanticLocalChanges) {
+                    this.logger?.info(
+                        "Conflict detector: ignoring apply failure because local file changes are whitespace-only.",
+                        {
+                            repositoryFilePath: patch.repositoryFilePath,
+                            fromUser: patch.userName,
+                            stderr: applyCheckResult.stderr,
+                        },
+                    );
+                    return "none";
+                }
+
+                const hasDirectOverlap = patchHunksNearby(patch.patch, localSemanticDiff, 0);
+                if (hasDirectOverlap) {
+                    this.logger?.info(
+                        "Conflict detector: definite conflict — apply failed with direct local hunk overlap.",
+                        {
+                            repositoryFilePath: patch.repositoryFilePath,
+                            fromUser: patch.userName,
+                            stderr: applyCheckResult.stderr,
+                        },
+                    );
+                    return "definite";
+                }
+
+                const hasNearbyOverlap = patchHunksNearby(patch.patch, localSemanticDiff);
+                if (hasNearbyOverlap) {
+                    this.logger?.info(
+                        "Conflict detector: likely conflict — apply failed with nearby local hunk overlap.",
+                        {
+                            repositoryFilePath: patch.repositoryFilePath,
+                            fromUser: patch.userName,
+                            stderr: applyCheckResult.stderr,
+                        },
+                    );
+                    return "likely";
+                }
+
+                this.logger?.info(
+                    "Conflict detector: ignoring apply failure because local semantic edits are unrelated.",
+                    {
+                        repositoryFilePath: patch.repositoryFilePath,
+                        fromUser: patch.userName,
+                        stderr: applyCheckResult.stderr,
+                    },
+                );
+                return "none";
             }
 
             // Proximity check: does the incoming patch touch lines near our local uncommitted changes?
             // Note: coordinate spaces differ (incoming patch is relative to baseCommit, local diff is
             // relative to HEAD), so this is a heuristic rather than a precise check.
-            const localDiffResult = await this.gitContext.runGitCommand(repositoryRootPath, [
-                "diff",
-                "HEAD",
-                "--",
-                patch.repositoryFilePath,
-            ]);
-
-            if (localDiffResult.stdout.trim() && patchHunksNearby(patch.patch, localDiffResult.stdout)) {
+            if (hasSemanticLocalChanges && patchHunksNearby(patch.patch, localSemanticDiff)) {
                 this.logger?.info("Conflict detector: likely conflict — hunk proximity detected.", {
                     repositoryFilePath: patch.repositoryFilePath,
                     fromUser: patch.userName,

@@ -68,6 +68,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                 ],
             };
@@ -143,6 +144,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                     {
                         filePath: "/src/app.ts",
@@ -172,6 +174,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                     {
                         filePath: "/src/app.ts",
@@ -179,6 +182,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "edit",
                         repositoryRemoteUrl: "https://github.com/org/other.git",
+                        upstreamBranch: "origin/feature",
                     },
                 ],
             };
@@ -216,6 +220,13 @@ describe("ActivityController", () => {
             expect(response.body.count).toBe(1);
             expect(response.body.activities[0].userName).toBe("Alice");
         });
+
+        it("should filter activities by upstreamBranch", async () => {
+            const response = await request(app).get("/activities").query({ upstreamBranch: "origin/main" }).expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.activities[0].upstreamBranch).toBe("origin/main");
+        });
     });
 
     describe("POST /patches", () => {
@@ -223,6 +234,7 @@ describe("ActivityController", () => {
             const patch: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Alice",
+                upstreamBranch: "origin/main",
                 repositoryFilePath: "src/index.ts",
                 baseCommit: "abc123",
                 patch: "diff --git a/src/index.ts b/src/index.ts\\n...",
@@ -257,6 +269,7 @@ describe("ActivityController", () => {
             const patch: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Alice",
+                upstreamBranch: "origin/main",
                 repositoryFilePath: "src/index.ts",
                 baseCommit: "abc123",
                 patch: "diff --git a/src/index.ts b/src/index.ts\\n...",
@@ -283,6 +296,7 @@ describe("ActivityController", () => {
             const patch1: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Alice",
+                upstreamBranch: "origin/main",
                 repositoryFilePath: "src/index.ts",
                 baseCommit: "abc123",
                 patch: "diff --git a/src/index.ts b/src/index.ts\\n...",
@@ -291,6 +305,7 @@ describe("ActivityController", () => {
             const patch2: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/other.git",
                 userName: "Bob",
+                upstreamBranch: "origin/feature",
                 repositoryFilePath: "src/app.ts",
                 baseCommit: "def456",
                 patch: "diff --git a/src/app.ts b/src/app.ts\\n...",
@@ -352,6 +367,13 @@ describe("ActivityController", () => {
 
             expect(response.body.count).toBe(1);
             expect(response.body.patches[0].userName).toBe("Alice");
+        });
+
+        it("should filter patches by upstreamBranch", async () => {
+            const response = await request(app).get("/patches").query({ upstreamBranch: "origin/main" }).expect(200);
+
+            expect(response.body.count).toBe(1);
+            expect(response.body.patches[0].upstreamBranch).toBe("origin/main");
         });
 
         it("should sort patches by timestamp descending", async () => {
@@ -506,6 +528,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                     {
                         filePath: "/src/index.ts",
@@ -513,6 +536,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "edit",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                 ],
             };
@@ -522,6 +546,7 @@ describe("ActivityController", () => {
             const patch: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Alice",
+                upstreamBranch: "origin/main",
                 repositoryFilePath: "/src/index.ts",
                 baseCommit: "abc123",
                 patch: "diff --git a/src/index.ts b/src/index.ts\\n...",
@@ -570,6 +595,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                 ],
             };
@@ -578,6 +604,7 @@ describe("ActivityController", () => {
             const relativePatch: PatchDto = {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Dana",
+                upstreamBranch: "origin/main",
                 repositoryFilePath: "src/feature.ts",
                 baseCommit: "def456",
                 patch: "diff --git a/src/feature.ts b/src/feature.ts\n...",
@@ -614,6 +641,38 @@ describe("ActivityController", () => {
             expect(response.body.repositories[0].repositoryRemoteUrl).toBe("https://github.com/org/repo.git");
         });
 
+        it("should filter files by upstreamBranch", async () => {
+            const response = await request(app).get("/files").query({ upstreamBranch: "origin/main" }).expect(200);
+
+            expect(response.body.repositories).toHaveLength(1);
+            expect(response.body.repositories[0].upstreamBranch).toBe("origin/main");
+        });
+
+        it("should keep separate repository groups for different upstream branches", async () => {
+            await request(app)
+                .post("/activities")
+                .send({
+                    activities: [
+                        {
+                            filePath: "/src/branch.ts",
+                            userName: "Charlie",
+                            timestamp: new Date(Date.now() + 1000).toISOString(),
+                            action: "open",
+                            repositoryRemoteUrl: "https://github.com/org/repo.git",
+                            upstreamBranch: "origin/release",
+                        },
+                    ],
+                })
+                .expect(200);
+
+            const response = await request(app).get("/files").expect(200);
+
+            expect(response.body.repositories).toHaveLength(2);
+            expect(
+                response.body.repositories.map((repo: { upstreamBranch?: string }) => repo.upstreamBranch).sort(),
+            ).toEqual(["origin/main", "origin/release"]);
+        });
+
         it("should only include files with active users", async () => {
             // Close the file for both users
             const closeBatch: ActivityBatchDto = {
@@ -624,6 +683,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "close",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                     {
                         filePath: "/src/index.ts",
@@ -631,6 +691,7 @@ describe("ActivityController", () => {
                         timestamp: new Date().toISOString(),
                         action: "close",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                 ],
             };
@@ -653,6 +714,7 @@ describe("ActivityController", () => {
                         timestamp: new Date(Date.now() + 1000).toISOString(), // Newer
                         action: "open",
                         repositoryRemoteUrl: "https://github.com/org/repo.git",
+                        upstreamBranch: "origin/main",
                     },
                 ],
             };
@@ -675,6 +737,7 @@ describe("ActivityController", () => {
                 timestamp: new Date().toISOString(),
                 action: "open",
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
+                upstreamBranch: "origin/main",
             });
 
             const errors = await validate(activity);
@@ -698,6 +761,7 @@ describe("ActivityController", () => {
             const patch = plainToClass(PatchDto, {
                 repositoryRemoteUrl: "https://github.com/org/repo.git",
                 userName: "Alice",
+                upstreamBranch: "origin/main",
                 repositoryFilePath: "src/index.ts",
                 baseCommit: "abc123",
                 patch: "diff content",

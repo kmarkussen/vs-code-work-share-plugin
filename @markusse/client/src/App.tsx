@@ -18,6 +18,7 @@ import {
     ListItemButton,
     ListItemText,
     Paper,
+    Pagination,
     Stack,
     ThemeProvider,
     Toolbar,
@@ -187,12 +188,12 @@ function App() {
         () => buildDashboardMetrics(activities, patches, repositories),
         [activities, patches, repositories],
     );
-    const activityFeed = useMemo(() => buildActivityFeed(activities, patches).slice(0, 18), [activities, patches]);
+    const activityFeed = useMemo(() => buildActivityFeed(activities, patches), [activities, patches]);
     const featuredPatches = useMemo(() => buildFeaturedPatches(patches), [patches]);
     const repositoryTree = useMemo(() => buildRepositoryTree(repositories), [repositories]);
     const repositorySummaries = useMemo(() => buildRepositorySummaries(repositories), [repositories]);
     const userSummaries = useMemo(
-        () => buildUserSummaries(activities, patches, repositories).slice(0, 8),
+        () => buildUserSummaries(activities, patches, repositories),
         [activities, patches, repositories],
     );
 
@@ -401,9 +402,9 @@ function App() {
                             selectedPatchId={selectedPatchId}
                         />
                     :   <LandingPage
-                            activityFeed={activityFeed}
+                            activityFeed={activityFeed.slice(0, 18)}
                             dashboardMetrics={dashboardMetrics}
-                            userSummaries={userSummaries}
+                            userSummaries={userSummaries.slice(0, 8)}
                             vsixInfo={vsixInfo}
                         />
                     }
@@ -650,6 +651,69 @@ function DashboardPage({
     selectedPatchId: string | null;
     userSummaries: ReturnType<typeof buildUserSummaries>;
 }) {
+    const repositoryPageSize = 8;
+    const peoplePageSize = 12;
+    const activityPageSize = 24;
+    const patchPageSize = 24;
+    const repositoryOverviewPageSize = 10;
+
+    const [repositoryPage, setRepositoryPage] = useState(1);
+    const [peoplePage, setPeoplePage] = useState(1);
+    const [activityPage, setActivityPage] = useState(1);
+    const [patchPage, setPatchPage] = useState(1);
+    const [repositoryOverviewPage, setRepositoryOverviewPage] = useState(1);
+
+    const repositoryPageCount = Math.max(1, Math.ceil(repositoryTree.length / repositoryPageSize));
+    const peoplePageCount = Math.max(1, Math.ceil(userSummaries.length / peoplePageSize));
+    const activityPageCount = Math.max(1, Math.ceil(activityFeed.length / activityPageSize));
+    const patchPageCount = Math.max(1, Math.ceil(featuredPatches.length / patchPageSize));
+    const repositoryOverviewPageCount = Math.max(1, Math.ceil(repositorySummaries.length / repositoryOverviewPageSize));
+
+    useEffect(() => {
+        setRepositoryPage((current) => Math.min(current, repositoryPageCount));
+    }, [repositoryPageCount]);
+
+    useEffect(() => {
+        setPeoplePage((current) => Math.min(current, peoplePageCount));
+    }, [peoplePageCount]);
+
+    useEffect(() => {
+        setActivityPage((current) => Math.min(current, activityPageCount));
+    }, [activityPageCount]);
+
+    useEffect(() => {
+        setPatchPage((current) => Math.min(current, patchPageCount));
+    }, [patchPageCount]);
+
+    useEffect(() => {
+        setRepositoryOverviewPage((current) => Math.min(current, repositoryOverviewPageCount));
+    }, [repositoryOverviewPageCount]);
+
+    const pagedRepositories = useMemo(() => {
+        const start = (repositoryPage - 1) * repositoryPageSize;
+        return repositoryTree.slice(start, start + repositoryPageSize);
+    }, [repositoryPage, repositoryTree]);
+
+    const pagedUsers = useMemo(() => {
+        const start = (peoplePage - 1) * peoplePageSize;
+        return userSummaries.slice(start, start + peoplePageSize);
+    }, [peoplePage, userSummaries]);
+
+    const pagedActivity = useMemo(() => {
+        const start = (activityPage - 1) * activityPageSize;
+        return activityFeed.slice(start, start + activityPageSize);
+    }, [activityFeed, activityPage]);
+
+    const pagedPatches = useMemo(() => {
+        const start = (patchPage - 1) * patchPageSize;
+        return featuredPatches.slice(start, start + patchPageSize);
+    }, [featuredPatches, patchPage]);
+
+    const pagedRepositorySummaries = useMemo(() => {
+        const start = (repositoryOverviewPage - 1) * repositoryOverviewPageSize;
+        return repositorySummaries.slice(start, start + repositoryOverviewPageSize);
+    }, [repositoryOverviewPage, repositorySummaries]);
+
     if (loading) {
         return (
             <Box sx={{ display: "flex", justifyContent: "center", mt: 8 }}>
@@ -694,7 +758,7 @@ function DashboardPage({
                         detail='Browse active files and open their latest shared patch directly in the diff sidebar.'
                     />
                     <Stack spacing={1.5}>
-                        {repositoryTree.map((repository) => (
+                        {pagedRepositories.map((repository) => (
                             <Paper key={repository.repositoryRemoteUrl} className='tree-card' elevation={0}>
                                 <Box className='tree-card-header'>
                                     <Box>
@@ -706,7 +770,7 @@ function DashboardPage({
                                     </Box>
                                     <Chip size='small' color='secondary' label={`${repository.patchCount} patches`} />
                                 </Box>
-                                <List disablePadding>
+                                <List disablePadding className='list-scroll region-files'>
                                     {repository.files.slice(0, 8).map((file) => {
                                         const latestPatch = file.patches[0];
                                         return (
@@ -742,6 +806,11 @@ function DashboardPage({
                             </Paper>
                         ))}
                     </Stack>
+                    <ListPagination
+                        page={repositoryPage}
+                        pageCount={repositoryPageCount}
+                        onChange={setRepositoryPage}
+                    />
                 </Paper>
 
                 <Box className='workspace-column'>
@@ -751,7 +820,7 @@ function DashboardPage({
                             detail='People-centric summaries built from activity and patch streams.'
                         />
                         <Box className='people-grid'>
-                            {userSummaries.map((user) => (
+                            {pagedUsers.map((user) => (
                                 <Paper key={user.name} className='person-card' elevation={0}>
                                     <Typography variant='h6'>{user.name}</Typography>
                                     <Typography variant='body2' color='text.secondary'>
@@ -771,6 +840,7 @@ function DashboardPage({
                                 </Paper>
                             ))}
                         </Box>
+                        <ListPagination page={peoplePage} pageCount={peoplePageCount} onChange={setPeoplePage} />
                     </Paper>
 
                     <Paper id='activity-log' className='workspace-panel' elevation={0}>
@@ -778,8 +848,8 @@ function DashboardPage({
                             title='Activity log'
                             detail='Recent updates across file activity, patch sharing, and repository motion.'
                         />
-                        <List disablePadding>
-                            {activityFeed.map((item) => (
+                        <List disablePadding className='list-scroll region-activity'>
+                            {pagedActivity.map((item) => (
                                 <ListItemButton
                                     key={item.id}
                                     className='feed-row'
@@ -806,6 +876,7 @@ function DashboardPage({
                                 </ListItemButton>
                             ))}
                         </List>
+                        <ListPagination page={activityPage} pageCount={activityPageCount} onChange={setActivityPage} />
                     </Paper>
                 </Box>
 
@@ -814,8 +885,8 @@ function DashboardPage({
                         title='Patch stream'
                         detail='Choose a patch to open it in the review sidebar or fullscreen diff mode.'
                     />
-                    <Stack spacing={1.25}>
-                        {featuredPatches.map((item) => (
+                    <Stack spacing={1.25} className='list-scroll region-patches'>
+                        {pagedPatches.map((item) => (
                             <Paper
                                 key={item.id}
                                 className={`patch-list-card${selectedPatchId === item.id ? " selected" : ""}`}
@@ -831,6 +902,7 @@ function DashboardPage({
                             </Paper>
                         ))}
                     </Stack>
+                    <ListPagination page={patchPage} pageCount={patchPageCount} onChange={setPatchPage} />
 
                     <Divider sx={{ my: 3 }} />
 
@@ -839,7 +911,7 @@ function DashboardPage({
                         detail='High-level repository counts anchored to current file state.'
                     />
                     <Stack spacing={1.25}>
-                        {repositorySummaries.slice(0, 6).map((repository) => (
+                        {pagedRepositorySummaries.map((repository) => (
                             <Paper key={repository.repositoryRemoteUrl} className='focus-row' elevation={0}>
                                 <Box>
                                     <Typography variant='subtitle1'>{repository.repositoryName}</Typography>
@@ -855,9 +927,43 @@ function DashboardPage({
                             </Paper>
                         ))}
                     </Stack>
+                    <ListPagination
+                        page={repositoryOverviewPage}
+                        pageCount={repositoryOverviewPageCount}
+                        onChange={setRepositoryOverviewPage}
+                    />
                 </Paper>
             </Box>
         </Stack>
+    );
+}
+
+function ListPagination({
+    page,
+    pageCount,
+    onChange,
+}: {
+    page: number;
+    pageCount: number;
+    onChange: (page: number) => void;
+}) {
+    if (pageCount <= 1) {
+        return null;
+    }
+
+    return (
+        <Box className='list-pagination'>
+            <Pagination
+                count={pageCount}
+                page={page}
+                onChange={(_, nextPage) => onChange(nextPage)}
+                size='small'
+                siblingCount={1}
+                boundaryCount={1}
+                shape='rounded'
+                color='primary'
+            />
+        </Box>
     );
 }
 

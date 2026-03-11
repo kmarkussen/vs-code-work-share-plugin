@@ -46,6 +46,10 @@ export class GitContextService {
         return this.gitInitializationPromise;
     }
 
+    get api(): GitApi | undefined {
+        return this.gitApi;
+    }
+
     public resolveRepositoryForFile(filePath: string): GitRepository | undefined {
         if (!this.gitApi || this.gitApi.repositories.length === 0) {
             return undefined;
@@ -116,6 +120,15 @@ export class GitContextService {
         }
 
         return this.getRepositoryRemoteUrlForRepository(repository);
+    }
+
+    public async getRepositories(): Promise<GitRepository[] | undefined> {
+        await this.initialize();
+        if (!this.gitApi || this.gitApi.repositories.length === 0) {
+            return undefined;
+        }
+
+        return this.gitApi.repositories;
     }
 
     public getRepositoryRelativeFilePath(filePath: string): string | undefined {

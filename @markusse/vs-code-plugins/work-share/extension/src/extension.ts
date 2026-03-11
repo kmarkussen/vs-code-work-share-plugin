@@ -2,7 +2,12 @@ import * as vscode from "vscode";
 import { FileActivityTracker } from "./fileActivityTracker";
 import { ApiClient } from "./apiClient";
 import { OutputLogger } from "./outputLogger";
-import { ConflictTreeDataProvider, FileTreeDataProvider, UserTreeDataProvider, WorkStatusDataProvider } from "./fileTreeDataProvider";
+import {
+    ConflictTreeDataProvider,
+    FileTreeDataProvider,
+    UserTreeDataProvider,
+    WorkStatusDataProvider,
+} from "./fileTreeDataProvider";
 
 let fileActivityTracker: FileActivityTracker | undefined;
 
@@ -17,6 +22,29 @@ interface OpenConflictDiffArgs {
         committed?: boolean;
     };
     repositoryRemoteUrl?: string;
+}
+
+interface OpenConflictFileArgs {
+    repositoryFilePath: string;
+    repositoryRemoteUrl?: string;
+}
+
+function getConflictIndicatorPresentation(severity: "likely" | "definite") {
+    return severity === "definite" ?
+            {
+                statusText: "$(error) Work Share: Definite conflict",
+                shortLabel: "Definite conflict",
+                tooltipLabel: "Definite conflict detected for the active file.",
+                backgroundColor: new vscode.ThemeColor("statusBarItem.errorBackground"),
+                foregroundColor: new vscode.ThemeColor("statusBarItem.errorForeground"),
+            }
+        :   {
+                statusText: "$(warning) Work Share: Likely conflict",
+                shortLabel: "Likely conflict",
+                tooltipLabel: "Likely conflict detected for the active file.",
+                backgroundColor: new vscode.ThemeColor("statusBarItem.warningBackground"),
+                foregroundColor: new vscode.ThemeColor("statusBarItem.warningForeground"),
+            };
 }
 
 /**
@@ -39,6 +67,58 @@ export function activate(context: vscode.ExtensionContext) {
     const logger = new OutputLogger(outputChannel);
     logger.info("Extension activated.");
 
+    const activeConflictStatusItem = vscode.window.createStatusBarItem(
+        "workShare.activeFileConflict",
+        vscode.StatusBarAlignment.Left,
+        1000,
+    );
+    const activeConflictCodeLensChanged = new vscode.EventEmitter<void>();
+    const activeConflictCodeLensProvider: vscode.CodeLensProvider = {
+        onDidChangeCodeLenses: activeConflictCodeLensChanged.event,
+        provideCodeLenses(document) {
+            if (!fileActivityTracker) {
+                return [];
+            }
+
+            const activeEditor = vscode.window.activeTextEditor;
+            if (!activeEditor || activeEditor.document.uri.toString() !== document.uri.toString()) {
+                return [];
+            }
+
+            const repositoryFilePath = fileActivityTracker.getRepositoryRelativeFilePath(document.uri.fsPath);
+            if (!repositoryFilePath) {
+                return [];
+            }
+
+            const conflictPatches = fileActivityTracker.getProjectFileConflicts(repositoryFilePath);
+            if (!conflictPatches || conflictPatches.length === 0) {
+                return [];
+            }
+
+            const severity = fileActivityTracker.getHighestConflictSeverityForFile(repositoryFilePath);
+            if (severity !== "likely" && severity !== "definite") {
+                return [];
+            }
+
+            const presentation = getConflictIndicatorPresentation(severity);
+            const sourceCount = conflictPatches.length;
+            const range = new vscode.Range(0, 0, 0, 0);
+
+            return [
+                new vscode.CodeLens(range, {
+                    command: "work-share.showActiveFileConflicts",
+                    title: `Work Share: ${presentation.shortLabel} (${sourceCount} source${sourceCount === 1 ? "" : "s"})`,
+                    arguments: [],
+                }),
+            ];
+        },
+    };
+    context.subscriptions.push(
+        activeConflictStatusItem,
+        activeConflictCodeLensChanged,
+        vscode.languages.registerCodeLensProvider({ scheme: "file" }, activeConflictCodeLensProvider),
+    );
+
     // Set initial tracking context for menu visibility
     void updateTrackingContext();
 
@@ -48,7 +128,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize file activity tracker
     fileActivityTracker = new FileActivityTracker(context, apiClient, logger);
 
-    // Initialize tree view provider
+    // Initialize Work Share Activity tree view
     const treeDataProvider = new FileTreeDataProvider(apiClient, fileActivityTracker, logger);
     const treeView = vscode.window.createTreeView("workShareActivity", {
         treeDataProvider: treeDataProvider,
@@ -79,6 +159,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Auto-reveal active file when editor changes
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor((editor) => {
+            void updateActiveConflictIndicator();
             if (editor && treeView.visible && fileActivityTracker) {
                 setTimeout(async () => {
                     const repoUrl = await fileActivityTracker!.getCurrentRepositoryRemoteUrl();
@@ -99,6 +180,65 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(conflictTreeView);
 
+    const updateConflictViewBadge = () => {
+        if (!fileActivityTracker) {
+            conflictTreeView.badge = undefined;
+            return;
+        }
+
+        const conflictCount = fileActivityTracker.getAllProjectFileConflicts().size;
+        conflictTreeView.badge =
+            conflictCount > 0 ?
+                {
+                    value: conflictCount,
+                    tooltip: `${conflictCount} file(s) with reported conflicts`,
+                }
+            :   undefined;
+    };
+
+    const updateActiveConflictIndicator = async () => {
+        const activeEditor = vscode.window.activeTextEditor;
+        activeConflictCodeLensChanged.fire();
+
+        if (!activeEditor || !fileActivityTracker) {
+            activeConflictStatusItem.hide();
+            updateConflictViewBadge();
+            return;
+        }
+
+        const repositoryFilePath = fileActivityTracker.getRepositoryRelativeFilePath(activeEditor.document.uri.fsPath);
+        if (!repositoryFilePath) {
+            activeConflictStatusItem.hide();
+            updateConflictViewBadge();
+            return;
+        }
+
+        const conflictPatches = fileActivityTracker.getProjectFileConflicts(repositoryFilePath);
+        if (!conflictPatches || conflictPatches.length === 0) {
+            activeConflictStatusItem.hide();
+            updateConflictViewBadge();
+            return;
+        }
+
+        const severity = fileActivityTracker.getHighestConflictSeverityForFile(repositoryFilePath);
+        if (severity !== "likely" && severity !== "definite") {
+            activeConflictStatusItem.hide();
+            updateConflictViewBadge();
+            return;
+        }
+
+        const presentation = getConflictIndicatorPresentation(severity);
+        const sourceCount = conflictPatches.length;
+        activeConflictStatusItem.text = presentation.statusText;
+        activeConflictStatusItem.tooltip = `${presentation.tooltipLabel}\n${repositoryFilePath}\n${sourceCount} source(s) reported. Click to open Work Share.`;
+        activeConflictStatusItem.backgroundColor = presentation.backgroundColor;
+        activeConflictStatusItem.color = presentation.foregroundColor;
+        activeConflictStatusItem.command = "work-share.showActiveFileConflicts";
+        activeConflictStatusItem.show();
+
+        updateConflictViewBadge();
+    };
+
     // User / team activity tree view.
     const userTreeDataProvider = new UserTreeDataProvider(apiClient, fileActivityTracker);
     const userTreeView = vscode.window.createTreeView("workShareUsers", {
@@ -110,6 +250,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Reveal active file in conflict tree when editor focus changes.
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor((editor) => {
+            void updateActiveConflictIndicator();
             if (editor && conflictTreeView.visible && fileActivityTracker) {
                 const repoPath = fileActivityTracker.getRepositoryRelativeFilePath(editor.document.uri.fsPath);
                 if (repoPath) {
@@ -118,6 +259,12 @@ export function activate(context: vscode.ExtensionContext) {
                     }, 500);
                 }
             }
+        }),
+    );
+
+    context.subscriptions.push(
+        fileActivityTracker.onDidChangeConflictStatus(() => {
+            void updateActiveConflictIndicator();
         }),
     );
 
@@ -140,6 +287,24 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register commands
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.showActiveFileConflicts", async () => {
+            await vscode.commands.executeCommand("workbench.view.extension.work-share");
+
+            const activeEditor = vscode.window.activeTextEditor;
+            if (!activeEditor || !fileActivityTracker) {
+                return;
+            }
+
+            const repoPath = fileActivityTracker.getRepositoryRelativeFilePath(activeEditor.document.uri.fsPath);
+            if (!repoPath) {
+                return;
+            }
+
+            await conflictTreeDataProvider.revealFileByPath(conflictTreeView, repoPath);
+        }),
+    );
+
     context.subscriptions.push(
         vscode.commands.registerCommand("work-share.showFileActivity", () => {
             vscode.window.showInformationMessage("Work Share: Showing file activity");
@@ -207,6 +372,26 @@ export function activate(context: vscode.ExtensionContext) {
                 },
                 args.repositoryRemoteUrl,
             );
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("work-share.openConflictFile", async (args: OpenConflictFileArgs) => {
+            if (!fileActivityTracker || !args?.repositoryFilePath) {
+                vscode.window.showWarningMessage("Work Share: Conflict file details are unavailable for this item.");
+                return;
+            }
+
+            const opened = await fileActivityTracker.openRepositoryFileInEditor(
+                args.repositoryFilePath,
+                args.repositoryRemoteUrl,
+            );
+
+            if (!opened) {
+                vscode.window.showWarningMessage(
+                    `Work Share: Could not locate file '${args.repositoryFilePath}' in the current workspace repositories.`,
+                );
+            }
         }),
     );
 
@@ -285,6 +470,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Start tracking
     fileActivityTracker.start();
+    void updateActiveConflictIndicator();
+    updateConflictViewBadge();
 
     // Listen for configuration changes
     context.subscriptions.push(

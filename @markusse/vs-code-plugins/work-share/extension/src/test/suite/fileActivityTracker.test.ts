@@ -145,6 +145,90 @@ suite("FileActivityTracker Test Suite", () => {
         assert.strictEqual(status, "clean");
     });
 
+    test("evaluatePatchConflictSeverity should ignore whitespace-only local edits", async () => {
+        const trackerInternals = tracker as unknown as {
+            gitContext: {
+                runGitCommand(
+                    repositoryRootPath: string,
+                    args: string[],
+                ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+            };
+            evaluatePatchConflictSeverity(
+                repositoryRootPath: string,
+                patch: import("../../sharedPatch").SharedPatch,
+            ): Promise<import("../../fileActivity/types").ConflictSeverity>;
+        };
+
+        trackerInternals.gitContext.runGitCommand = async (_repositoryRootPath, args) => {
+            if (args[0] === "diff" && args.includes("--ignore-all-space")) {
+                // Local change is whitespace-only after normalization.
+                return { exitCode: 0, stdout: "", stderr: "" };
+            }
+
+            if (args[0] === "apply") {
+                // Simulate an apply check failure that should be ignored for whitespace-only edits.
+                return { exitCode: 1, stdout: "", stderr: "patch failed" };
+            }
+
+            return { exitCode: 0, stdout: "", stderr: "" };
+        };
+
+        const severity = await trackerInternals.evaluatePatchConflictSeverity("/repo", {
+            repositoryRemoteUrl: "https://github.com/org/repo.git",
+            userName: "teammate",
+            repositoryFilePath: "src/example.ts",
+            baseCommit: "abc123",
+            patch: "diff --git a/src/example.ts b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+            timestamp: new Date(),
+        });
+
+        assert.strictEqual(severity, "none");
+    });
+
+    test("evaluatePatchConflictSeverity should ignore unrelated local semantic edits", async () => {
+        const trackerInternals = tracker as unknown as {
+            gitContext: {
+                runGitCommand(
+                    repositoryRootPath: string,
+                    args: string[],
+                ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+            };
+            evaluatePatchConflictSeverity(
+                repositoryRootPath: string,
+                patch: import("../../sharedPatch").SharedPatch,
+            ): Promise<import("../../fileActivity/types").ConflictSeverity>;
+        };
+
+        trackerInternals.gitContext.runGitCommand = async (_repositoryRootPath, args) => {
+            if (args[0] === "diff" && args.includes("--ignore-all-space")) {
+                // Local semantic edit is far away from incoming patch hunks.
+                return {
+                    exitCode: 0,
+                    stdout: "@@ -500,1 +500,1 @@\n-oldFarAway\n+newFarAway\n",
+                    stderr: "",
+                };
+            }
+
+            if (args[0] === "apply") {
+                // Simulate an apply check failure that should not become a conflict for unrelated edits.
+                return { exitCode: 1, stdout: "", stderr: "patch failed" };
+            }
+
+            return { exitCode: 0, stdout: "", stderr: "" };
+        };
+
+        const severity = await trackerInternals.evaluatePatchConflictSeverity("/repo", {
+            repositoryRemoteUrl: "https://github.com/org/repo.git",
+            userName: "teammate",
+            repositoryFilePath: "src/example.ts",
+            baseCommit: "abc123",
+            patch: "diff --git a/src/example.ts b/src/example.ts\n@@ -10,1 +10,1 @@\n-old\n+new\n",
+            timestamp: new Date(),
+        });
+
+        assert.strictEqual(severity, "none");
+    });
+
     test("isGitInternalPath should detect .git directory files", () => {
         assert.strictEqual(isGitInternalPath("/repo/.git/config"), true);
         assert.strictEqual(isGitInternalPath("/repo/.git/index"), true);

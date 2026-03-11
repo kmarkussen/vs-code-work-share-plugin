@@ -12,6 +12,21 @@ A collaborative VS Code extension with a remote server for tracking and sharing 
 - �🌐 **Web Dashboard**: View team activity and code patches in a modern web interface
 - 🐳 **Docker Ready**: Simple deployment with Docker Compose
 
+## Design Use Cases
+
+- Patches should be generated and shared by the plugin for all local commits ahead of the remote tracking branch. These will be called "Pending Commits".
+- Patches should be generated for local changes to file. ( as indicate by changes to the local git indexes ). These should be called "Working Changes"
+- A user should be considered to have 'updated' a file if they have submitted Pending Commits
+- A user should be considered to be 'editing' a file if they have submitted "Working Changes"
+- On initialization, the plugin should report all "Pending Commits" and "Working Changes" to the server.
+- On saving a file, the plugin should report "Working Changes"
+- On opening a file, the plugin should check for patches related to the current file and calculate conflicts.
+- On opening a file, if the repository has diverged from the remote branch and there are commits ahead of the current branch, conflicts should be calculated.
+- The work-share view container should present the user several sections of content:
+    - The server status ( connection status, sharing toggle, last update date, user identity, current repository information, etc )
+    - Conflict Tree - view presenting file-specific conflict information, with nodes, which when clicked allow the user to view patch diffs and merge tools
+    - User Tree - view presenting the latest user activity, with nodes indicating Pending and Working changes submitted by other users.
+
 ## Table of Contents
 
 - [Architecture](#architecture)

@@ -428,12 +428,12 @@ export class ActivityController {
                 timestamp: normalizeSyncTimestamp(patch.timestamp),
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                 receivedAt: new Date().toISOString(),
-                ...(patch as any).changeType && { changeType: (patch as any).changeType },
-                ...(patch as any).workingState && { workingState: (patch as any).workingState },
-                ...(patch as any).commitSha && { commitSha: (patch as any).commitSha },
-                ...(patch as any).commitShortSha && { commitShortSha: (patch as any).commitShortSha },
-                ...(patch as any).commitMessage && { commitMessage: (patch as any).commitMessage },
-                ...(patch as any).contentHash && { contentHash: (patch as any).contentHash },
+                ...((patch as any).changeType && { changeType: (patch as any).changeType }),
+                ...((patch as any).workingState && { workingState: (patch as any).workingState }),
+                ...((patch as any).commitSha && { commitSha: (patch as any).commitSha }),
+                ...((patch as any).commitShortSha && { commitShortSha: (patch as any).commitShortSha }),
+                ...((patch as any).commitMessage && { commitMessage: (patch as any).commitMessage }),
+                ...((patch as any).contentHash && { contentHash: (patch as any).contentHash }),
             };
 
             const compositeKey = createPatchCompositeKey(storedPatch);
