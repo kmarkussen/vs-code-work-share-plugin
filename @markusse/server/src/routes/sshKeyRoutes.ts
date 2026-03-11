@@ -3,10 +3,9 @@ import db from "../database/db";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 
 const router = Router();
-router.use(requireAuth);
 
 /** GET /profile/ssh-keys — list the authenticated user's SSH keys. */
-router.get("/profile/ssh-keys", (req: AuthenticatedRequest, res: Response) => {
+router.get("/profile/ssh-keys", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const keys = db
         .prepare("SELECT id, label, public_key, created_at FROM ssh_keys WHERE username = ? ORDER BY created_at")
         .all(req.authenticatedUsername) as Array<{ id: number; label: string; public_key: string; created_at: string }>;
@@ -20,7 +19,7 @@ router.get("/profile/ssh-keys", (req: AuthenticatedRequest, res: Response) => {
 });
 
 /** POST /profile/ssh-keys — add a new SSH key. */
-router.post("/profile/ssh-keys", (req: AuthenticatedRequest, res: Response) => {
+router.post("/profile/ssh-keys", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { label, publicKey } = req.body ?? {};
 
     if (!label || !publicKey) {
@@ -42,7 +41,7 @@ router.post("/profile/ssh-keys", (req: AuthenticatedRequest, res: Response) => {
 });
 
 /** DELETE /profile/ssh-keys/:id — remove an SSH key. */
-router.delete("/profile/ssh-keys/:id", (req: AuthenticatedRequest, res: Response) => {
+router.delete("/profile/ssh-keys/:id", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
         res.status(400).json({ error: "Invalid SSH key id." });

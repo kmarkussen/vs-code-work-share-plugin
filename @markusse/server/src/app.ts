@@ -78,6 +78,10 @@ app.use(cookieParser());
 // Silently refresh JWT tokens that are close to expiry.
 app.use(silentRefresh);
 
+// Serve static files from the React app before API middleware so landing page access is always public.
+const publicPath = path.join(__dirname, "../public");
+app.use(express.static(publicPath));
+
 // Auth, team, and SSH key routes.
 app.use(authRoutes);
 app.use(teamRoutes);
@@ -131,10 +135,6 @@ app.get("/downloads/work-share.vsix", async (req, res) => {
 
     res.download(vsixPath, path.basename(vsixPath));
 });
-
-// Serve static files from the React app
-const publicPath = path.join(__dirname, "../public");
-app.use(express.static(publicPath));
 
 // Catch-all route to serve React index.html for client-side routing (must be last)
 app.get("*", (req, res) => {

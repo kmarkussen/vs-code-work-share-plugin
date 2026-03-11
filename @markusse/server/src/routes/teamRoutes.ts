@@ -3,10 +3,9 @@ import db from "../database/db";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 
 const router = Router();
-router.use(requireAuth);
 
 /** POST /teams — create a new team. */
-router.post("/teams", (req: AuthenticatedRequest, res: Response) => {
+router.post("/teams", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.body ?? {};
     const username = req.authenticatedUsername!;
 
@@ -39,7 +38,7 @@ router.post("/teams", (req: AuthenticatedRequest, res: Response) => {
 });
 
 /** GET /teams — list all teams the authenticated user is an active member of. */
-router.get("/teams", (req: AuthenticatedRequest, res: Response) => {
+router.get("/teams", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const username = req.authenticatedUsername!;
     const teams = db.prepare(`
         SELECT t.team_name, t.owner_username, t.created_at,
@@ -60,7 +59,7 @@ router.get("/teams", (req: AuthenticatedRequest, res: Response) => {
 });
 
 /** GET /teams/:teamName — get team details including member list with sharing status. */
-router.get("/teams/:teamName", (req: AuthenticatedRequest, res: Response) => {
+router.get("/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -113,7 +112,7 @@ router.get("/teams/:teamName", (req: AuthenticatedRequest, res: Response) => {
 });
 
 /** DELETE /teams/:teamName — owner deletes the team. */
-router.delete("/teams/:teamName", (req: AuthenticatedRequest, res: Response) => {
+router.delete("/teams/:teamName", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -135,7 +134,7 @@ router.delete("/teams/:teamName", (req: AuthenticatedRequest, res: Response) => 
 });
 
 /** POST /teams/:teamName/members — owner adds an existing user by username or email. */
-router.post("/teams/:teamName/members", (req: AuthenticatedRequest, res: Response) => {
+router.post("/teams/:teamName/members", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const { usernameOrEmail } = req.body ?? {};
     const username = req.authenticatedUsername!;
@@ -189,7 +188,7 @@ router.post("/teams/:teamName/members", (req: AuthenticatedRequest, res: Respons
 });
 
 /** GET /teams/invitations — list pending invitations for the authenticated user. */
-router.get("/invitations", (req: AuthenticatedRequest, res: Response) => {
+router.get("/invitations", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const username = req.authenticatedUsername!;
     const invitations = db.prepare(`
         SELECT tm.team_name, t.owner_username, tm.invited_at
@@ -207,7 +206,7 @@ router.get("/invitations", (req: AuthenticatedRequest, res: Response) => {
 });
 
 /** POST /invitations/:teamName/accept — accept a pending invitation. */
-router.post("/invitations/:teamName/accept", (req: AuthenticatedRequest, res: Response) => {
+router.post("/invitations/:teamName/accept", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -235,7 +234,7 @@ router.post("/invitations/:teamName/accept", (req: AuthenticatedRequest, res: Re
 });
 
 /** POST /invitations/:teamName/decline — decline or leave a team. */
-router.post("/invitations/:teamName/decline", (req: AuthenticatedRequest, res: Response) => {
+router.post("/invitations/:teamName/decline", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const username = req.authenticatedUsername!;
 
@@ -265,7 +264,7 @@ router.post("/invitations/:teamName/decline", (req: AuthenticatedRequest, res: R
 });
 
 /** PATCH /teams/:teamName/sharing — enable or disable sharing for the authenticated user in a team. */
-router.patch("/teams/:teamName/sharing", (req: AuthenticatedRequest, res: Response) => {
+router.patch("/teams/:teamName/sharing", requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { teamName } = req.params;
     const { enabled } = req.body ?? {};
     const username = req.authenticatedUsername!;

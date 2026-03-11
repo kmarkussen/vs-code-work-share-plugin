@@ -16,6 +16,11 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "moduleResolution": "node",
+    "types": [
+      "node",
+      "vscode",
+      "mocha"
+    ],
     "paths": {
       "@work-share/types": ["../shared/src/index"]
     }
